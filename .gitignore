@@ -15,3 +15,9 @@ captures/
 .env
 *.secrets
 secrets.properties
+
+# User-supplied archive data stays outside the public repository.
+*.sqlite
+*.sqlite-*
+*Project_Pack*.zip
+*Starter_Catalog*.zip

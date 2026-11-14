@@ -1,0 +1,180 @@
+package com.mediahub.mobile.ui
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.mediahub.mobile.domain.CloudFileCopy
+import com.mediahub.mobile.domain.CloudNode
+import com.mediahub.mobile.domain.CloudProvider
+import com.mediahub.mobile.domain.CopyPhase
+import com.mediahub.mobile.domain.CopyProgress
+import com.mediahub.mobile.drive.DriveAuthorizationRequired
+import com.mediahub.mobile.drive.DriveProvider
+import com.mediahub.mobile.mail.MailProvider
+import com.mediahub.mobile.mail.MailWebDavClient
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
+import kotlin.coroutines.coroutineContext
+
+internal enum class CloudSite(val label: String) {
+    MAIL("Облако Mail"),
+    DRIVE("Google Drive");
+
+    val other get() = if (this == MAIL) DRIVE else MAIL
+}
+
+internal data class CopySelection(
+    val site: CloudSite,
+    val provider: CloudProvider,
+    val file: CloudNode,
+    val target: CloudProvider
+)
+
+internal sealed interface CopyState {
+    val name: String
+
+    data class Running(
+        override val name: String,
+        val progress: CopyProgress? = null,
+        val cancelling: Boolean = false
+    ) : CopyState
+    data class Verified(override val name: String, val size: Long) : CopyState
+    data class Failed(override val name: String, val message: String) : CopyState
+    data class Cancelled(override val name: String) : CopyState
+}
+
+internal class CloudTransferViewModel : ViewModel() {
+    private val _drive = MutableStateFlow<DriveProvider?>(null)
+    val drive = _drive.asStateFlow()
+    private val _driveError = MutableStateFlow<String?>(null)
+    val driveError = _driveError.asStateFlow()
+    private val _authorizing = MutableStateFlow(false)
+    val authorizing = _authorizing.asStateFlow()
+    private val _selection = MutableStateFlow<CopySelection?>(null)
+    val selection = _selection.asStateFlow()
+    private val _copy = MutableStateFlow<CopyState?>(null)
+    val copy = _copy.asStateFlow()
+    private var copiedJob: Job? = null
+    private var token: String? = null
+    private var invalidToken: String? = null
+
+    fun beginDriveAuthorization(): Boolean {
+        if (_authorizing.value || _copy.value is CopyState.Running) return false
+        _authorizing.value = true
+        _driveError.value = null
+        return true
+    }
+
+    fun acceptDriveToken(value: String) {
+        viewModelScope.launch {
+            val provider = DriveProvider(value)
+            try {
+                runInterruptible(Dispatchers.IO) { provider.checkAccess() }
+                token = value
+                _drive.value = provider
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (e is DriveAuthorizationRequired) invalidToken = value
+                _driveError.value = e.userMessage("Не удалось проверить доступ к Google Drive.")
+            } finally {
+                _authorizing.value = false
+            }
+        }
+    }
+
+    fun failDriveAuthorization(message: String) {
+        _driveError.value = message
+        _authorizing.value = false
+    }
+
+    fun expireDrive() {
+        disconnectDrive()?.let { invalidToken = it }
+        _driveError.value = "Доступ к Google Drive истёк. Подключите диск снова."
+    }
+
+    fun takeInvalidToken(): String? = invalidToken.also { invalidToken = null }
+
+    fun disconnectDrive(): String? {
+        _drive.value = null
+        _driveError.value = null
+        _selection.value = null
+        return token.also { token = null }
+    }
+
+    fun selectMail(client: MailWebDavClient, file: CloudNode) {
+        val destination = _drive.value ?: return
+        _selection.value = CopySelection(CloudSite.MAIL, MailProvider(client), file, destination)
+    }
+
+    fun selectDrive(mail: MailProvider, file: CloudNode) {
+        val provider = _drive.value ?: return
+        _selection.value = CopySelection(CloudSite.DRIVE, provider, file, mail)
+    }
+
+    fun clearSelection() { _selection.value = null }
+
+    fun startCopy(selection: CopySelection, folder: CloudNode): Boolean {
+        if (_selection.value !== selection || _copy.value is CopyState.Running) return false
+        val name = selection.file.name
+        _selection.value = null
+        _copy.value = CopyState.Running(name)
+        copiedJob = viewModelScope.launch {
+            val execution = coroutineContext
+            try {
+                val size = runInterruptible(Dispatchers.IO) {
+                    var lastPhase: CopyPhase? = null
+                    var lastUpdate = 0L
+                    CloudFileCopy.run(
+                        selection.provider, selection.file, selection.target, folder,
+                        checkpoint = { execution.ensureActive() },
+                        report = { progress ->
+                            val now = System.nanoTime()
+                            if (lastPhase != progress.phase || progress.done == progress.total ||
+                                now - lastUpdate >= 150_000_000
+                            ) {
+                                _copy.update { current ->
+                                    if (current is CopyState.Running && !current.cancelling) {
+                                        current.copy(progress = progress)
+                                    } else current
+                                }
+                                lastPhase = progress.phase
+                                lastUpdate = now
+                            }
+                        }
+                    )
+                }
+                _copy.value = CopyState.Verified(name, size)
+            } catch (e: CancellationException) {
+                _copy.value = CopyState.Cancelled(name)
+                throw e
+            } catch (e: Exception) {
+                if (e is DriveAuthorizationRequired || e.cause is DriveAuthorizationRequired) expireDrive()
+                _copy.value = CopyState.Failed(name,
+                    e.userMessage("Копирование прервалось. Проверьте папку назначения перед повтором."))
+            }
+        }
+        return true
+    }
+
+    fun cancelCopy() {
+        val current = _copy.value as? CopyState.Running ?: return
+        _copy.value = current.copy(cancelling = true)
+        copiedJob?.cancel()
+    }
+}
+
+internal fun Exception.userMessage(fallback: String): String =
+    when (this) {
+        is java.net.SocketTimeoutException -> "Сервер не ответил вовремя. Проверьте подключение."
+        is java.net.UnknownHostException -> "Сервер недоступен. Проверьте интернет."
+        is java.io.IOException -> message?.takeIf { it.length < 240 && !it.contains("://") } ?: fallback
+        is IllegalArgumentException -> message?.takeIf { it.length < 240 && !it.contains("://") } ?: fallback
+        else -> fallback
+    }

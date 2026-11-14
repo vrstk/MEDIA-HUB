@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.LruCache
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -15,16 +16,16 @@ import kotlinx.coroutines.withContext
  */
 class MailThumbnailLoader(private val client: MailWebDavClient) {
     private val permits = Semaphore(2)
-    private val cache = object : LruCache<String, Bitmap>(16 * 1024 * 1024) {
-        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount.coerceAtLeast(1)
+    private val cache = object : LruCache<DavEntry, Bitmap>(16 * 1024 * 1024) {
+        override fun sizeOf(key: DavEntry, value: Bitmap): Int = value.byteCount.coerceAtLeast(1)
     }
 
-    suspend fun load(path: String): Bitmap? {
-        cache.get(path)?.let { return it }
+    suspend fun load(file: DavEntry): Bitmap? {
+        cache.get(file)?.let { return it }
         return permits.withPermit {
-            cache.get(path)?.let { return@withPermit it }
-            val raw = withContext(Dispatchers.IO) {
-                client.previewImage(path, maxBytes = 5 * 1024 * 1024)
+            cache.get(file)?.let { return@withPermit it }
+            val raw = runInterruptible(Dispatchers.IO) {
+                client.previewImage(file.path, maxBytes = 5 * 1024 * 1024)
             }
             val thumb = withContext(Dispatchers.Default) {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -45,7 +46,7 @@ class MailThumbnailLoader(private val client: MailWebDavClient) {
                     )
                 }
             }
-            if (thumb != null) cache.put(path, thumb)
+            if (thumb != null) cache.put(file, thumb)
             thumb
         }
     }

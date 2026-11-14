@@ -31,16 +31,20 @@ jobs:
           test -n "$SDKMANAGER"
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0"
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/wrapper-validation@v4
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Unit tests, lint and debug APK
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          gradle-version: '8.13'
-      # First bootstrap CI generates wrapper at runtime; a tracked wrapper
-      # is added after the first successful Gradle verification.
-      - name: Unit tests
-        run: gradle :app:testDebugUnitTest --stacktrace
-      - name: Debug APK
-        run: gradle :app:assembleDebug --stacktrace
+          name: media-hub-test-results
+          path: |
+            app/build/test-results/testDebugUnitTest/*.xml
+            app/build/reports/lint-results-debug.xml
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:

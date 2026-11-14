@@ -10,7 +10,9 @@ data class DavEntry(
     val path: String,
     val name: String,
     val isDirectory: Boolean,
-    val size: Long?
+    val size: Long?,
+    val mimeType: String? = null,
+    val etag: String? = null
 )
 
 /** Prevent sending requests to hosts supplied by untrusted WebDAV XML. */
@@ -72,6 +74,17 @@ object DavPath {
 object DavXmlParser {
     private val FORBIDDEN_DECLARATION = Regex("<!\\s*(DOCTYPE|ENTITY)\\b", RegexOption.IGNORE_CASE)
     fun parse(xml: String, currentPath: String): List<DavEntry> {
+        val current = DavPath.normalize(currentPath)
+        return readResponses(xml)
+            .filter { DavPath.normalize(it.path) != current && DavPath.parent(it.path) == current }
+            .distinctBy { it.path }
+            .sortedWith(compareBy<DavEntry> { !it.isDirectory }.thenBy { it.name.lowercase() })
+    }
+
+    fun parseStat(xml: String, path: String): DavEntry? = readResponses(xml)
+        .firstOrNull { DavPath.normalize(it.path) == DavPath.normalize(path) }
+
+    private fun readResponses(xml: String): List<DavEntry> {
         // Android's DocumentBuilderFactory does not support all SAX/Apache feature URIs.
         // Reject DTD declarations before invoking the platform XML parser, and
         // refuse any external resource resolution as a second line of defence.
@@ -93,7 +106,6 @@ object DavXmlParser {
             ByteArrayInputStream(xml.toByteArray(Charsets.UTF_8))
         )
         val result = ArrayList<DavEntry>()
-        val current = DavPath.normalize(currentPath)
         val responses = doc.getElementsByTagNameNS("DAV:", "response")
         for (i in 0 until responses.length) {
             val response = responses.item(i) as? Element ?: continue
@@ -102,15 +114,15 @@ object DavXmlParser {
             if (href.isEmpty()) continue
             val isDirectory = response.getElementsByTagNameNS("DAV:", "collection").length > 0
             val path = runCatching { DavPath.normalize(href, isDirectory) }.getOrNull() ?: continue
-            if (DavPath.normalize(path) == current) continue
             val name = response.getElementsByTagNameNS("DAV:", "displayname")
                 .item(0)?.textContent?.trim().orEmpty()
                 .ifBlank { DavPath.name(path) }
-            val length = response.getElementsByTagNameNS("DAV:", "getcontentlength")
-                .item(0)?.textContent?.trim()?.toLongOrNull()
-            result.add(DavEntry(path, name, isDirectory, if (isDirectory) null else length))
+            fun property(localName: String): String? = response
+                .getElementsByTagNameNS("DAV:", localName).item(0)?.textContent?.trim()
+            val length = property("getcontentlength")?.toLongOrNull()?.takeIf { it >= 0L }
+            result.add(DavEntry(path, name, isDirectory, if (isDirectory) null else length,
+                property("getcontenttype"), property("getetag")))
         }
-        return result.distinctBy { it.path }
-            .sortedWith(compareBy<DavEntry> { !it.isDirectory }.thenBy { it.name.lowercase() })
+        return result
     }
 }
