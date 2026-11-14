@@ -45,12 +45,31 @@ jobs:
             app/build/reports/lint-results-debug.xml
           if-no-files-found: warn
           retention-days: 14
+      - name: Preserve regular debug APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/media-hub-debug.apk
       - name: Build separately installable Preview APK
         if: github.event_name == 'pull_request'
         run: |
-          ./gradlew --no-daemon -PmediaHubSideBySide=true :app:assembleDebug --stacktrace
-          mkdir -p dist
+          # A clean rebuild is required: Gradle might otherwise consider
+          # assembleDebug UP-TO-DATE despite a changed applicationIdSuffix.
+          ./gradlew --no-daemon -PmediaHubSideBySide=true :app:clean :app:assembleDebug --stacktrace
           cp app/build/outputs/apk/debug/app-debug.apk dist/media-hub-preview.apk
+      - name: Verify distinct Android package names
+        if: github.event_name == 'pull_request'
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
+        run: |
+          set -euo pipefail
+          AAPT="$ANDROID_HOME/build-tools/36.0.0/aapt"
+          test -x "$AAPT"
+          "$AAPT" dump badging dist/media-hub-debug.apk | grep -F "package: name='com.mediahub.mobile'"
+          "$AAPT" dump badging dist/media-hub-preview.apk | grep -F "package: name='com.mediahub.mobile.preview'"
+          if cmp -s dist/media-hub-debug.apk dist/media-hub-preview.apk; then
+            echo "ERROR: Preview APK is identical to regular APK."
+            exit 1
+          fi
       - name: Upload Preview APK
         if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
@@ -63,6 +82,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: media-hub-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: dist/media-hub-debug.apk
           if-no-files-found: error
           retention-days: 14
