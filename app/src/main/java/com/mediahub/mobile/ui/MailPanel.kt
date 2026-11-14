@@ -212,7 +212,11 @@ internal fun MailPanel(
                 throw e
             } catch (e: Exception) {
                 if (selectedPreview?.path == file.path) {
-                    previewError = e.userMessage("Ошибка предпросмотра.")
+                    previewError = if (e is java.net.SocketException ||
+                        e is java.io.EOFException || e is java.net.ProtocolException ||
+                        e is java.net.SocketTimeoutException
+                    ) "Соединение с Mail прервалось. Нажмите «Повторить»." else
+                        e.userMessage("Ошибка предпросмотра.")
                 }
             } finally {
                 if (selectedPreview?.path == file.path && currentCoroutineContext().isActive) {
@@ -490,10 +494,11 @@ internal fun MailPanel(
                             modifier = Modifier.fillMaxSize(),
                             contentScale = ContentScale.Fit
                         )
-                        else -> Text(
-                            previewError ?: "Изображение недоступно.",
-                            color = Color.White
-                        )
+                        else -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(previewError ?: "Изображение недоступно.", color = Color.White)
+                            Spacer(Modifier.height(12.dp))
+                            TextButton(onClick = { preview(file) }) { Text("Повторить") }
+                        }
                     }
                 }
                 Row(

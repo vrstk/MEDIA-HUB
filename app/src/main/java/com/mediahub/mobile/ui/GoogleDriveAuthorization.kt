@@ -31,6 +31,8 @@ internal fun rememberDriveActions(model: CloudTransferViewModel): DriveActions {
             CommonStatusCodes.DEVELOPER_ERROR ->
                 "В Google Cloud нужен Android OAuth-клиент с пакетом ${activity.packageName} и SHA-1 этой APK."
             CommonStatusCodes.NETWORK_ERROR -> "Google недоступен. Проверьте интернет."
+            CommonStatusCodes.INTERNAL_ERROR ->
+                "Внутренняя ошибка Google Play services. Повторите подключение. Если ошибка сохраняется, обновите Сервисы Google Play и проверьте настройки OAuth."
             CommonStatusCodes.CANCELED -> "Google вернул код отмены авторизации."
             else -> "Не удалось разрешить доступ к Google Drive. Проверьте настройки OAuth и повторите."
         }

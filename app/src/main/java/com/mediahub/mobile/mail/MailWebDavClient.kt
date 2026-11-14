@@ -154,10 +154,27 @@ class MailWebDavClient(
 
     fun previewImage(path: String, maxBytes: Int = 16 * 1024 * 1024): ByteArray {
         require(maxBytes in 1..(16 * 1024 * 1024))
-        return openRead(path).use { response ->
-            readBounded(response.stream, response.sizeBytes ?: -1, maxBytes,
-                "Фотография слишком большая для предпросмотра. Её можно скачать.")
+        var firstFailure: IOException? = null
+        for (attempt in 0..1) {
+            try {
+                return openRead(path).use { response ->
+                    readBounded(response.stream, response.sizeBytes ?: -1, maxBytes,
+                        "Фотография слишком большая для предпросмотра. Её можно скачать.")
+                }
+            } catch (failure: IOException) {
+                // The GET is read-only and starts from byte 0 on every attempt.
+                // Never retry HTTP errors, cancellation or files exceeding the limit.
+                if (attempt == 1 || Thread.currentThread().isInterrupted ||
+                    !PreviewRetryPolicy.retryable(failure)
+                ) {
+                    firstFailure?.let { failure.addSuppressed(it) }
+                    throw failure
+                }
+                firstFailure = failure
+                // Do not use the failed response/stream for the next attempt.
+            }
         }
+        throw IOException("Не удалось загрузить изображение.")
     }
 
     private fun readBounded(stream: InputStream, reported: Long, maxBytes: Int, error: String): ByteArray {
