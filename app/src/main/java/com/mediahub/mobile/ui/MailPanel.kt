@@ -1,5 +1,6 @@
 package com.mediahub.mobile.ui
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -8,11 +9,14 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
@@ -28,7 +32,10 @@ import com.mediahub.mobile.mail.DavEntry
 import com.mediahub.mobile.mail.DavPath
 import com.mediahub.mobile.mail.MailAccount
 import com.mediahub.mobile.mail.MailWebDavClient
+import com.mediahub.mobile.mail.MailThumbnailLoader
+import com.mediahub.mobile.mail.MediaFileKinds
 import com.mediahub.mobile.mail.SecureMailAccountStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -47,6 +54,7 @@ fun MailPanel() {
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var search by remember { mutableStateOf("") }
+    var gridView by rememberSaveable { mutableStateOf(false) }
     var newFolder by remember { mutableStateOf("") }
     var createFolderDialog by remember { mutableStateOf(false) }
     var selectedForDownload by remember { mutableStateOf<DavEntry?>(null) }
@@ -54,6 +62,7 @@ fun MailPanel() {
     var previewBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
     var previewLoading by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val thumbnailLoader = remember(account) { account?.let { MailThumbnailLoader(MailWebDavClient(it.email, it.password)) } }
 
     fun newClient(): MailWebDavClient {
         val saved = account ?: throw IllegalStateException("Mail не подключён.")
@@ -166,6 +175,17 @@ fun MailPanel() {
                 selectedPreview = null
             } finally {
                 previewLoading = false
+            }
+        }
+    }
+
+    fun openFile(file: DavEntry) {
+        when {
+            file.isDirectory -> browse(file.path)
+            MediaFileKinds.isImage(file.name) -> preview(file)
+            else -> {
+                selectedForDownload = file
+                savePicker.launch(file.name)
             }
         }
     }
@@ -300,48 +320,77 @@ fun MailPanel() {
                     loadedPath = null
                 }) { Text("Отключить") }
             }
-            // This is the ONLY scrolling file list; it always receives bounded height.
-            LazyColumn(
-                modifier = Modifier.fillMaxWidth().weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(bottom = 16.dp)
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                if (filtered.isEmpty() && !busy) {
-                    item { Text(if (search.isEmpty()) "Папка пуста." else "Совпадений нет.") }
+                FilterChip(
+                    selected = !gridView, onClick = { gridView = false },
+                    label = { Text("Список") }
+                )
+                FilterChip(
+                    selected = gridView, onClick = { gridView = true },
+                    label = { Text("Плитка") }
+                )
+            }
+            if (gridView) {
+                // Grid is lazy: preview requests start only for currently composed tiles.
+                // Do not run a gallery-wide background download.
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(bottom = 16.dp)
+                ) {
+                    if (filtered.isEmpty() && !busy) {
+                        item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(2) }) {
+                            Text(if (search.isEmpty()) "Папка пуста." else "Совпадений нет.")
+                        }
+                    }
+                    items(filtered.size, key = { filtered[it].path }) { index ->
+                        val file = filtered[index]
+                        MailGridTile(
+                            file = file,
+                            loader = thumbnailLoader,
+                            enabled = !busy,
+                            onOpen = { openFile(file) }
+                        )
+                    }
                 }
-                items(filtered, key = { it.path }) { file ->
-                    val imageFile = !file.isDirectory && listOf("jpg", "jpeg", "png", "webp")
-                        .any { file.name.endsWith("." + it, ignoreCase = true) }
-                    Card(
-                        onClick = {
-                            when {
-                                file.isDirectory -> browse(file.path)
-                                imageFile -> preview(file)
-                                else -> {
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(bottom = 16.dp)
+                ) {
+                    if (filtered.isEmpty() && !busy) {
+                        item { Text(if (search.isEmpty()) "Папка пуста." else "Совпадений нет.") }
+                    }
+                    items(filtered, key = { it.path }) { file ->
+                        val imageFile = !file.isDirectory && MediaFileKinds.isImage(file.name)
+                        Card(
+                            onClick = { openFile(file) },
+                            enabled = !busy,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(if (file.isDirectory) "▣" else if (imageFile) "▧" else "▤")
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    file.name,
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                if (imageFile) TextButton(onClick = {
                                     selectedForDownload = file
                                     savePicker.launch(file.name)
-                                }
+                                }) { Text("Скачать") }
                             }
-                        },
-                        enabled = !busy,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(if (file.isDirectory) "▣" else if (imageFile) "▧" else "▤")
-                            Spacer(Modifier.width(10.dp))
-                            Text(
-                                file.name,
-                                modifier = Modifier.weight(1f),
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            if (imageFile) TextButton(onClick = {
-                                selectedForDownload = file
-                                savePicker.launch(file.name)
-                            }) { Text("Скачать") }
                         }
                     }
                 }
@@ -421,4 +470,57 @@ fun MailPanel() {
             TextButton(onClick = { createFolderDialog = false }) { Text("Отмена") }
         }
     )
+}
+
+
+@Composable
+private fun MailGridTile(
+    file: DavEntry,
+    loader: MailThumbnailLoader?,
+    enabled: Boolean,
+    onOpen: () -> Unit
+) {
+    val isImage = !file.isDirectory && MediaFileKinds.isImage(file.name)
+    Card(onClick = onOpen, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
+        Column {
+            Box(
+                modifier = Modifier.fillMaxWidth().aspectRatio(1f),
+                contentAlignment = Alignment.Center
+            ) {
+                if (isImage) {
+                    val thumb by produceState<Bitmap?>(
+                        initialValue = null, key1 = file.path, key2 = loader
+                    ) {
+                        value = try {
+                            loader?.load(file.path)
+                        } catch (cancel: CancellationException) {
+                            throw cancel
+                        } catch (_: Exception) {
+                            null
+                        }
+                    }
+                    if (thumb != null) {
+                        Image(
+                            bitmap = thumb!!.asImageBitmap(),
+                            contentDescription = file.name,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        Text("▧", style = MaterialTheme.typography.headlineLarge)
+                    }
+                } else {
+                    Text(if (file.isDirectory) "▣" else "▤",
+                        style = MaterialTheme.typography.headlineLarge)
+                }
+            }
+            Text(
+                text = file.name,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+    }
 }
