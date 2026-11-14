@@ -1,6 +1,10 @@
 package com.mediahub.mobile.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -95,11 +99,28 @@ internal fun DrivePanel(
     onCopy: (CloudNode) -> Unit
 ) {
     if (drive == null) {
+        val context = LocalContext.current
+        val clipboard = LocalClipboardManager.current
+        val diagnostics = remember(context) { DriveOAuthDiagnostics.read(context) }
+        var expanded by remember { mutableStateOf(false) }
         InfoCard("Google Drive", "Media Hub видит созданные им файлы и объекты, к которым Google предоставил приложению доступ.")
         driveError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         if (authorizing) LinearProgressIndicator(Modifier.fillMaxWidth())
         Button(onClick = actions.connect, enabled = !authorizing && !copying, modifier = Modifier.fillMaxWidth()) {
             Text("Подключить Google Drive")
+        }
+        TextButton(onClick = { expanded = !expanded }) {
+            Text(if (expanded) "Скрыть диагностику OAuth" else "Диагностика подключения Google Drive")
+        }
+        if (expanded) {
+            InfoCard("Данные установленной APK", "Google Cloud OAuth требует точного совпадения пакета и SHA-1 сертификата. В Preview другое имя пакета, а debug-сертификат GitHub может меняться.")
+            SelectionContainer {
+                Text(diagnostics.summary(), style = MaterialTheme.typography.bodySmall)
+            }
+            OutlinedButton(onClick = {
+                clipboard.setText(AnnotatedString(diagnostics.summary()))
+            }) { Text("Скопировать пакет и SHA-1") }
+            Text("Проверьте: Google Drive API включён, OAuth-клиент типа Android настроен, ваш аккаунт добавлен в тестировщики (при тестовом режиме). Не присылайте пароли или токены.", style = MaterialTheme.typography.bodySmall)
         }
         return
     }

@@ -305,15 +305,12 @@ internal fun MailPanel(
                         enabled = !busy,
                         contentPadding = PaddingValues(horizontal = 0.dp, vertical = 4.dp)
                     ) {
-                        Column(Modifier.fillMaxWidth()) {
-                            Text(
-                                breadcrumbs.last().title,
-                                style = MaterialTheme.typography.titleMedium,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text("Путь к папке", style = MaterialTheme.typography.labelSmall)
-                        }
+                        Text(
+                            breadcrumbs.last().title,
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                     DropdownMenu(expanded = pathExpanded, onDismissRequest = { pathExpanded = false }) {
                         breadcrumbs.asReversed().forEach { crumb ->

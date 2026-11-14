@@ -26,13 +26,15 @@ internal fun rememberDriveActions(model: CloudTransferViewModel): DriveActions {
     val authorization = remember(activity) { Identity.getAuthorizationClient(activity) }
 
     fun failure(error: Exception) {
-        val detail = when ((error as? ApiException)?.statusCode) {
+        val status = (error as? ApiException)?.statusCode
+        val detail = when (status) {
             CommonStatusCodes.DEVELOPER_ERROR ->
                 "В Google Cloud нужен Android OAuth-клиент с пакетом ${activity.packageName} и SHA-1 этой APK."
             CommonStatusCodes.NETWORK_ERROR -> "Google недоступен. Проверьте интернет."
+            CommonStatusCodes.CANCELED -> "Google вернул код отмены авторизации."
             else -> "Не удалось разрешить доступ к Google Drive. Проверьте настройки OAuth и повторите."
         }
-        model.failDriveAuthorization(detail)
+        model.failDriveAuthorization(detail + (status?.let { " (код Google: $it)" } ?: ""))
     }
 
     fun accept(result: AuthorizationResult) {
@@ -43,14 +45,28 @@ internal fun rememberDriveActions(model: CloudTransferViewModel): DriveActions {
     }
 
     val consent = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
-        if (result.resultCode != Activity.RESULT_OK) {
-            model.failDriveAuthorization("Подключение Google Drive отменено.")
-        } else {
+        // RESULT_CANCELED does not prove the user deliberately closed the dialog:
+        // OAuth configuration issues can also prevent the flow from completing.
+        val data = result.data
+        if (result.resultCode == Activity.RESULT_OK && data != null) {
             try {
-                accept(authorization.getAuthorizationResultFromIntent(result.data))
+                accept(authorization.getAuthorizationResultFromIntent(data))
             } catch (error: ApiException) {
                 failure(error)
             }
+        } else if (data != null) {
+            try {
+                // The returned intent may include an actual Google status code.
+                authorization.getAuthorizationResultFromIntent(data)
+                model.failDriveAuthorization("Google не подтвердил подключение. Откройте диагностику OAuth ниже.")
+            } catch (error: ApiException) {
+                failure(error)
+            }
+        } else {
+            model.failDriveAuthorization(
+                "Диалог Google завершился без разрешения (resultCode=${result.resultCode}). " +
+                    "Если вы его не закрывали, проверьте пакет и SHA-1 в диагностике OAuth."
+            )
         }
     }
 
@@ -61,7 +77,7 @@ internal fun rememberDriveActions(model: CloudTransferViewModel): DriveActions {
             if (result.hasResolution() && pending != null) {
                 try {
                     consent.launch(IntentSenderRequest.Builder(pending).build())
-                } catch (error: IllegalStateException) {
+                } catch (error: Exception) {
                     failure(error)
                 }
             } else accept(result)
