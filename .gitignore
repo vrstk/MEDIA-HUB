@@ -1,0 +1,17 @@
+# Android / Gradle
+.gradle/
+**/build/
+local.properties
+*.iml
+.idea/
+.DS_Store
+*.apk
+*.aab
+*.jks
+*.keystore
+*.hprof
+captures/
+# Never commit credential or personal data
+.env
+*.secrets
+secrets.properties
