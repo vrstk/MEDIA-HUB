@@ -6,6 +6,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -25,6 +26,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -32,6 +34,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.documentfile.provider.DocumentFile
 import com.mediahub.mobile.domain.CloudNode
 import com.mediahub.mobile.mail.DavEntry
@@ -448,25 +452,74 @@ internal fun MailPanel(
     }
 
     selectedPreview?.let { file ->
-        AlertDialog(
+        // Full screen: the underlying file list retains its scroll position.
+        // Only one image is requested at a time, previous requests are cancelled.
+        val photos = remember(filtered) {
+            filtered.filter { !it.isDirectory && MediaFileKinds.isImage(it.name) }
+        }
+        val index = photos.indexOfFirst { it.path == file.path }
+        Dialog(
             onDismissRequest = ::closePreview,
-            title = { Text(file.name, maxLines = 2) },
-            text = {
-                if (previewLoading) CircularProgressIndicator()
-                else previewBitmap?.let {
-                    Image(
-                        bitmap = it, contentDescription = "Предпросмотр фотографии",
-                        modifier = Modifier.fillMaxWidth().heightIn(max = 440.dp),
-                        contentScale = ContentScale.Fit
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Column(
+                modifier = Modifier.fillMaxSize().background(Color.Black)
+                    .padding(horizontal = 12.dp, vertical = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        file.name,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Color.White
                     )
-                } ?: Text(previewError ?: "Изображение недоступно.")
-            },
-            confirmButton = {
-                Row {
+                    TextButton(onClick = ::closePreview) { Text("Закрыть") }
+                }
+                Box(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    when {
+                        previewLoading -> CircularProgressIndicator()
+                        previewBitmap != null -> Image(
+                            bitmap = previewBitmap!!,
+                            contentDescription = file.name,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Fit
+                        )
+                        else -> Text(
+                            previewError ?: "Изображение недоступно.",
+                            color = Color.White
+                        )
+                    }
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    TextButton(
+                        enabled = index > 0,
+                        onClick = { if (index > 0) preview(photos[index - 1]) }
+                    ) { Text("Назад") }
+                    Text(
+                        if (index >= 0) "${index + 1} / ${photos.size}" else "",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                    TextButton(
+                        enabled = index >= 0 && index < photos.lastIndex,
+                        onClick = { if (index in 0 until photos.lastIndex) preview(photos[index + 1]) }
+                    ) { Text("Далее") }
+                    Spacer(Modifier.weight(1f))
                     if (driveConnected && !copying) {
-                        TextButton(onClick = { closePreview(); onCopy(newClient(), file.toCloudNode()) }) {
-                            Text("В Drive")
-                        }
+                        TextButton(onClick = {
+                            closePreview()
+                            onCopy(newClient(), file.toCloudNode())
+                        }) { Text("В Drive") }
                     }
                     TextButton(onClick = {
                         closePreview()
@@ -474,9 +527,8 @@ internal fun MailPanel(
                         savePicker.launch(file.name)
                     }) { Text("Скачать") }
                 }
-            },
-            dismissButton = { TextButton(onClick = ::closePreview) { Text("Закрыть") } }
-        )
+            }
+        }
     }
 
     if (createFolderDialog) {
