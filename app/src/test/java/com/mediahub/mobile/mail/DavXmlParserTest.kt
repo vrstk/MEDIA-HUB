@@ -18,6 +18,13 @@ class DavXmlParserTest {
       </d:multistatus>
     """.trimIndent()
 
+    @Test fun breadcrumbsDecodeNamesWithoutTouchingEncodedServerPaths() {
+        val crumbs = DavPath.breadcrumbs("/Images/%D0%9C%D0%BE%D0%B4%D0%B5%D0%BB%D0%B8%20A/")
+        assertEquals(listOf("Облако", "Images", "Модели A"), crumbs.map { it.title })
+        assertEquals("/Images/%D0%9C%D0%BE%D0%B4%D0%B5%D0%BB%D0%B8%20A/", crumbs.last().path)
+        assertEquals("/", DavPath.breadcrumbs("/").single().path)
+    }
+
     @Test fun excludesOwnFolderAndSortsDirectoriesFirst() {
         val files = DavXmlParser.parse(listing, "/")
         assertEquals(2, files.size)

@@ -8,6 +8,7 @@ import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okio.BufferedSink
 import java.io.InputStream
+import java.io.ByteArrayOutputStream
 import java.io.OutputStream
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -93,6 +94,34 @@ class MailWebDavClient(
             if (response.code != 200) fail(response.code)
             (response.body ?: throw IOException("Пустой ответ WebDAV."))
                 .byteStream().use { input -> input.copyTo(destination, 64 * 1024) }
+        }
+    }
+
+    /**
+     * A preview is intentionally opt-in and bounded. Never download an entire
+     * photo collection to display the file list. This only fetches one tapped image.
+     */
+    fun previewImage(path: String, maxBytes: Int = 16 * 1024 * 1024): ByteArray {
+        require(maxBytes in 1..(16 * 1024 * 1024))
+        val req = request("GET", DavPath.normalize(path, false)).get().build()
+        http.newCall(req).execute().use { response ->
+            if (response.code != 200) fail(response.code)
+            val body = response.body ?: throw IOException("Пустой ответ WebDAV.")
+            val reported = body.contentLength()
+            if (reported > maxBytes) throw IOException("Фотография слишком большая для предпросмотра. Её можно скачать.")
+            val result = ByteArrayOutputStream()
+            val buffer = ByteArray(32 * 1024)
+            body.byteStream().use { stream ->
+                while (true) {
+                    val count = stream.read(buffer)
+                    if (count < 0) break
+                    if (result.size() + count > maxBytes) {
+                        throw IOException("Фотография слишком большая для предпросмотра. Её можно скачать.")
+                    }
+                    result.write(buffer, 0, count)
+                }
+            }
+            return result.toByteArray()
         }
     }
 

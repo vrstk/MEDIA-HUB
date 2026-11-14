@@ -14,8 +14,23 @@ data class DavEntry(
 )
 
 /** Prevent sending requests to hosts supplied by untrusted WebDAV XML. */
+data class DavBreadcrumb(val title: String, val path: String)
+
 object DavPath {
     const val BASE_URL = "https://webdav.cloud.mail.ru"
+
+    /** HTTP paths stay percent-encoded; this is for display only. */
+    fun breadcrumbs(path: String): List<DavBreadcrumb> {
+        val encoded = normalize(path)
+        val result = mutableListOf(DavBreadcrumb("Облако", "/"))
+        var parent = "/"
+        for (segment in encoded.trim('/').split('/').filter { it.isNotEmpty() }) {
+            parent += segment + "/"
+            val title = URI(BASE_URL + "/" + segment).path.removePrefix("/")
+            result.add(DavBreadcrumb(title, parent))
+        }
+        return result
+    }
 
     fun normalize(path: String, directory: Boolean = true): String {
         val uri = URI(path)

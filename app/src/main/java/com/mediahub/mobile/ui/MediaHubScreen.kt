@@ -47,7 +47,11 @@ fun MediaHubScreen(darkTheme: Boolean, onThemeToggle: () -> Unit) {
             }
         }
     ) { padding ->
-        Column(
+        if (current == Screen.MAIL) {
+            Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+                MailPanel()
+            }
+        } else Column(
             modifier = Modifier.fillMaxSize().padding(padding)
                 .verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -70,7 +74,7 @@ fun MediaHubScreen(darkTheme: Boolean, onThemeToggle: () -> Unit) {
                     InfoCard("Умная группировка", "Анализ сходства лиц будет доступен только после включения пользователем. Сейчас он отключён.")
                 }
                 Screen.FILES -> LocalFilesPanel()
-                Screen.MAIL -> MailPanel()
+                Screen.MAIL -> Unit
                 Screen.TASKS -> {
                     InfoCard("Передачи", "Активных передач нет. Синхронизация и очередь ещё не подключены.")
                     InfoCard("Защита исходников", "Копирование не удаляет оригиналы. Перемещение потребует проверку результата и отдельное согласие.")
