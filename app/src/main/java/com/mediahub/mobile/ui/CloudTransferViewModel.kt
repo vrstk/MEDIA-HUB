@@ -11,6 +11,7 @@ import com.mediahub.mobile.drive.DriveAuthorizationRequired
 import com.mediahub.mobile.drive.DriveProvider
 import com.mediahub.mobile.mail.MailProvider
 import com.mediahub.mobile.mail.MailWebDavClient
+import com.mediahub.mobile.saf.SafFolderProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -52,6 +53,14 @@ internal sealed interface CopyState {
 internal class CloudTransferViewModel : ViewModel() {
     private val _drive = MutableStateFlow<DriveProvider?>(null)
     val drive = _drive.asStateFlow()
+    private val _safDrive = MutableStateFlow<SafFolderProvider?>(null)
+    val safDrive = _safDrive.asStateFlow()
+    fun attachSafDrive(provider: SafFolderProvider?) {
+        if (_copy.value is CopyState.Running) return
+        _safDrive.value = provider
+        _selection.value = null
+    }
+    private fun activeDrive(): CloudProvider? = _safDrive.value ?: _drive.value
     private val _driveError = MutableStateFlow<String?>(null)
     val driveError = _driveError.asStateFlow()
     private val _authorizing = MutableStateFlow(false)
@@ -109,12 +118,12 @@ internal class CloudTransferViewModel : ViewModel() {
     }
 
     fun selectMail(client: MailWebDavClient, file: CloudNode) {
-        val destination = _drive.value ?: return
+        val destination = activeDrive() ?: return
         _selection.value = CopySelection(CloudSite.MAIL, MailProvider(client), file, destination)
     }
 
     fun selectDrive(mail: MailProvider, file: CloudNode) {
-        val provider = _drive.value ?: return
+        val provider = activeDrive() ?: return
         _selection.value = CopySelection(CloudSite.DRIVE, provider, file, mail)
     }
 

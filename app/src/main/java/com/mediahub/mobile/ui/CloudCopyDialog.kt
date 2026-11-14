@@ -114,7 +114,7 @@ internal fun CloudCopyTask(state: CopyState?, onCancel: () -> Unit) {
             TextButton(onClick = onCancel, enabled = !state.cancelling) { Text("Отменить") }
         }
         is CopyState.Verified -> InfoCard(state.name,
-            "Копия проверена по SHA-256 · ${Formatter.formatFileSize(context, state.size)}")
+            "Содержимое копии проверено по SHA-256 · ${Formatter.formatFileSize(context, state.size)}. Для папок через Android синхронизацию с Google Drive проверьте отдельно.")
         is CopyState.Failed -> InfoCard(state.name, state.message)
         is CopyState.Cancelled -> InfoCard(state.name, "Передача остановлена. Проверьте папку назначения перед повтором.")
     }

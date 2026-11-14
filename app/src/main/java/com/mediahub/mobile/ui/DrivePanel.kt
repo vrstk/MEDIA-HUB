@@ -89,13 +89,16 @@ internal fun rememberFolderContents(
 
 @Composable
 internal fun DrivePanel(
-    drive: DriveProvider?,
+    drive: CloudProvider?,
+    safMode: Boolean,
     driveError: String?,
     authorizing: Boolean,
     mailConnected: Boolean,
     copying: Boolean,
     actions: DriveActions,
     onExpired: () -> Unit,
+    onSelectFolder: () -> Unit,
+    onDisconnectFolder: () -> Unit,
     onCopy: (CloudNode) -> Unit
 ) {
     if (drive == null) {
@@ -103,11 +106,15 @@ internal fun DrivePanel(
         val clipboard = LocalClipboardManager.current
         val diagnostics = remember(context) { DriveOAuthDiagnostics.read(context) }
         var expanded by remember { mutableStateOf(false) }
-        InfoCard("Google Drive", "Media Hub видит созданные им файлы и объекты, к которым Google предоставил приложению доступ.")
+        InfoCard("Google Drive через Android", "Выберите папку через системное приложение «Файлы». Если Google Drive отображается среди расположений, выберите папку в нём. Отдельная OAuth-настройка Media Hub не требуется.")
         driveError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         if (authorizing) LinearProgressIndicator(Modifier.fillMaxWidth())
-        Button(onClick = actions.connect, enabled = !authorizing && !copying, modifier = Modifier.fillMaxWidth()) {
-            Text("Подключить Google Drive")
+        Button(onClick = onSelectFolder, enabled = !copying, modifier = Modifier.fillMaxWidth()) {
+            Text("Выбрать папку Google Drive / Android")
+        }
+        Text("Доступ зависит от системного провайдера. Google Drive может не разрешать выбор целой папки на некоторых устройствах.", style = MaterialTheme.typography.bodySmall)
+        OutlinedButton(onClick = actions.connect, enabled = !authorizing && !copying, modifier = Modifier.fillMaxWidth()) {
+            Text("Альтернатива: подключить через OAuth")
         }
         TextButton(onClick = { expanded = !expanded }) {
             Text(if (expanded) "Скрыть диагностику OAuth" else "Диагностика подключения Google Drive")
@@ -143,7 +150,8 @@ internal fun DrivePanel(
     BackHandler(enabled = path.size > 1 && !creating, onBack = ::goBack)
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        Text("Доступ к файлам Media Hub", style = MaterialTheme.typography.labelMedium)
+        Text(if (safMode) "Папка, выбранная через Android" else "Доступ к файлам Media Hub", style = MaterialTheme.typography.labelMedium)
+        if (safMode) Text("Чтение копии через Android не гарантирует завершение синхронизации с Google.", style = MaterialTheme.typography.bodySmall)
         Text(path.joinToString(" / ") { it.name }, maxLines = 2, overflow = TextOverflow.Ellipsis)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
             if (path.size > 1) TextButton(onClick = ::goBack, enabled = !creating) { Text("Назад") }
@@ -201,8 +209,8 @@ internal fun DrivePanel(
                 }
             }
         }
-        TextButton(onClick = actions.disconnect, enabled = !copying && !creating) {
-            Text("Отключить Google Drive на устройстве")
+        TextButton(onClick = if (safMode) onDisconnectFolder else actions.disconnect, enabled = !copying && !creating) {
+            Text(if (safMode) "Отвязать выбранную папку" else "Отключить Google Drive на устройстве")
         }
     }
 

@@ -1,6 +1,12 @@
 package com.mediahub.mobile.ui
 
 import androidx.compose.foundation.*
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.mediahub.mobile.saf.SafFolderStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -33,6 +39,25 @@ internal fun MediaHubScreen(darkTheme: Boolean, onThemeToggle: () -> Unit, trans
     var mailAccount by remember { mutableStateOf(mailStore.load()) }
     val mail = remember(mailAccount) { mailAccount?.let { MailProvider(MailWebDavClient(it.email, it.password)) } }
     val drive by transfers.drive.collectAsState()
+    val safDrive by transfers.safDrive.collectAsState()
+    val safStore = remember(context) { SafFolderStore(context) }
+    val scope = rememberCoroutineScope()
+    var safError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        val restored = withContext(Dispatchers.IO) { safStore.restore() }
+        if (restored != null) transfers.attachSafDrive(restored)
+    }
+    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) scope.launch {
+            try {
+                val selectedFolder = withContext(Dispatchers.IO) { safStore.connect(uri) }
+                transfers.attachSafDrive(selectedFolder)
+                safError = null
+            } catch (e: Exception) {
+                safError = e.message ?: "Не удалось открыть выбранную папку."
+            }
+        }
+    }
     val driveError by transfers.driveError.collectAsState()
     val authorizing by transfers.authorizing.collectAsState()
     val selection by transfers.selection.collectAsState()
@@ -78,7 +103,7 @@ internal fun MediaHubScreen(darkTheme: Boolean, onThemeToggle: () -> Unit, trans
                         account = mailAccount,
                         store = mailStore,
                         onAccountChanged = { mailAccount = it },
-                        driveConnected = drive != null,
+                        driveConnected = drive != null || safDrive != null,
                         copying = copying,
                         onCopy = transfers::selectMail
                     )
@@ -95,7 +120,11 @@ internal fun MediaHubScreen(darkTheme: Boolean, onThemeToggle: () -> Unit, trans
                     FilterChip(showDrive, { showDrive = true }, label = { Text("Google Drive") })
                 }
                 if (showDrive) {
-                    DrivePanel(drive, driveError, authorizing, mail != null, copying, driveActions, transfers::expireDrive) {
+                    DrivePanel(safDrive ?: drive, safDrive != null, safError ?: driveError, authorizing, mail != null, copying, driveActions, transfers::expireDrive, onSelectFolder = { folderPicker.launch(null) }, onDisconnectFolder = {
+                        safStore.disconnect()
+                        transfers.attachSafDrive(null)
+                        safError = null
+                    }) {
                         mail?.let { provider -> transfers.selectDrive(provider, it) }
                     }
                 } else {
