@@ -14,7 +14,8 @@ private enum class Screen(val title: String, val symbol: String) {
     HOME("Главная", "⌂"),
     LIBRARY("Медиатека", "▦"),
     FILES("Файлы", "▤"),
-    TASKS("Задачи", "✓")
+    TASKS("Задачи", "✓"),
+    MAIL("Mail", "☁")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -60,7 +61,8 @@ fun MediaHubScreen(darkTheme: Boolean, onThemeToggle: () -> Unit) {
                         Text("Открыть файловый менеджер")
                     }
                     InfoCard("Google Drive", "Подключение OAuth и операции с файлами находятся в разработке. Учётные данные не запрашиваются.")
-                    InfoCard("Облако Mail", "Подключение по WebDAV находится в разработке. Не вводите пароль в эту версию.")
+                    InfoCard("Облако Mail", "Подключение по защищённому WebDAV, просмотр папок, загрузка и скачивание файлов.")
+                    OutlinedButton(onClick = { selected = Screen.MAIL.ordinal }, modifier = Modifier.fillMaxWidth()) { Text("Подключить Облако Mail") }
                 }
                 Screen.LIBRARY -> {
                     InfoCard("Каталог", "Подготовлен отдельный архивный каталог: 22 739 профилей, 1 187 категорий и тегов. Импорт в приложение пока не реализован.")
@@ -68,6 +70,7 @@ fun MediaHubScreen(darkTheme: Boolean, onThemeToggle: () -> Unit) {
                     InfoCard("Умная группировка", "Анализ сходства лиц будет доступен только после включения пользователем. Сейчас он отключён.")
                 }
                 Screen.FILES -> LocalFilesPanel()
+                Screen.MAIL -> MailPanel()
                 Screen.TASKS -> {
                     InfoCard("Передачи", "Активных передач нет. Синхронизация и очередь ещё не подключены.")
                     InfoCard("Защита исходников", "Копирование не удаляет оригиналы. Перемещение потребует проверку результата и отдельное согласие.")
