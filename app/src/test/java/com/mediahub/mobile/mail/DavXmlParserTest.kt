@@ -38,8 +38,37 @@ class DavXmlParserTest {
         DavPath.normalize("https://evil.example/secret")
     }
 
-    @Test(expected = Exception::class)
+    @Test(expected = IllegalArgumentException::class)
     fun rejectsDoctype() {
         DavXmlParser.parse("<!DOCTYPE x [<!ENTITY x SYSTEM 'file:///etc/passwd'>]><x>&x;</x>", "/")
+    }
+    @Test(expected = IllegalArgumentException::class)
+    fun rejectsEntityDeclarations() {
+        DavXmlParser.parse("<!ENTITY secret SYSTEM 'file:///etc/passwd'><d:multistatus xmlns:d='DAV:'/>", "/")
+    }
+
+    @Test
+    fun parsesEscapedNamesAndValidDavNamespace() {
+        val xml = """
+            <d:multistatus xmlns:d="DAV:">
+              <d:response><d:href>/My%20Files/</d:href>
+                <d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop></d:propstat>
+              </d:response>
+              <d:response><d:href>/My%20Files/A%26B.jpg</d:href>
+                <d:propstat><d:prop><d:displayname>A&amp;B.jpg</d:displayname>
+                  <d:getcontentlength>42</d:getcontentlength>
+                </d:prop></d:propstat>
+              </d:response>
+            </d:multistatus>
+        """.trimIndent()
+        val result = DavXmlParser.parse(xml, "/My%20Files/")
+        assertEquals(1, result.size)
+        assertEquals("A&B.jpg", result[0].name)
+        assertEquals(42L, result[0].size)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun rejectsOversizedResponseBeforeParse() {
+        DavXmlParser.parse("x".repeat(8_000_001), "/")
     }
 }

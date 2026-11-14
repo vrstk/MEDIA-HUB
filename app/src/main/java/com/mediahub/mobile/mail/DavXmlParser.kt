@@ -4,7 +4,6 @@ import org.w3c.dom.Element
 import java.io.ByteArrayInputStream
 import java.net.URI
 import java.net.URLEncoder
-import javax.xml.XMLConstants
 import javax.xml.parsers.DocumentBuilderFactory
 
 data class DavEntry(
@@ -52,21 +51,30 @@ object DavPath {
 }
 
 /**
- * Only parse the DAV standard namespace. External entities and DTDs are disabled
- * to prevent XML external entity requests from untrusted servers.
+ * Parse only the DAV standard namespace. Reject DTDs before DOM parsing and
+ * always refuse external resource resolution. Avoid unsupported Android SAX features.
  */
 object DavXmlParser {
+    private val FORBIDDEN_DECLARATION = Regex("<!\\s*(DOCTYPE|ENTITY)\\b", RegexOption.IGNORE_CASE)
     fun parse(xml: String, currentPath: String): List<DavEntry> {
+        // Android's DocumentBuilderFactory does not support all SAX/Apache feature URIs.
+        // Reject DTD declarations before invoking the platform XML parser, and
+        // refuse any external resource resolution as a second line of defence.
+        // WebDAV listings do not require DTDs.
+        require(xml.length <= 8_000_000) { "Слишком большой XML-ответ WebDAV." }
+        require(!FORBIDDEN_DECLARATION.containsMatchIn(xml)) {
+            "XML-ответ WebDAV содержит запрещённую DTD или ENTITY-декларацию."
+        }
         val factory = DocumentBuilderFactory.newInstance().apply {
             isNamespaceAware = true
-            setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
-            setFeature("http://xml.org/sax/features/external-general-entities", false)
-            setFeature("http://xml.org/sax/features/external-parameter-entities", false)
-            setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true)
-            isXIncludeAware = false
-            setExpandEntityReferences(false)
+            isValidating = false
         }
-        val doc = factory.newDocumentBuilder().parse(
+        val builder = factory.newDocumentBuilder().apply {
+            setEntityResolver { _, _ ->
+                throw org.xml.sax.SAXException("Запрещена загрузка внешних XML-ресурсов.")
+            }
+        }
+        val doc = builder.parse(
             ByteArrayInputStream(xml.toByteArray(Charsets.UTF_8))
         )
         val result = ArrayList<DavEntry>()
