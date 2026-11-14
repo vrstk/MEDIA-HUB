@@ -21,12 +21,16 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      # GitHub-hosted Ubuntu runners include Android cmdline-tools.
-      # Avoid setup-android@v3, which still requests removed "tools" SDK package.
+      # SDK is pre-installed, but cmdline-tools might not be on PATH.
       - name: Install Android SDK packages
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
+          ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-36" "build-tools;36.0.0"
+          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)
+          test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0"
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
