@@ -6,11 +6,14 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -55,6 +58,9 @@ fun MailPanel() {
     var message by remember { mutableStateOf<String?>(null) }
     var search by remember { mutableStateOf("") }
     var gridView by rememberSaveable { mutableStateOf(false) }
+    var toolsExpanded by rememberSaveable { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    val gridState = rememberLazyGridState()
     var newFolder by remember { mutableStateOf("") }
     var createFolderDialog by remember { mutableStateOf(false) }
     var selectedForDownload by remember { mutableStateOf<DavEntry?>(null) }
@@ -190,6 +196,11 @@ fun MailPanel() {
         }
     }
 
+    LaunchedEffect(path, search, gridView) {
+        listState.scrollToItem(0)
+        gridState.scrollToItem(0)
+    }
+
     val filtered = remember(entries, search) {
         if (search.isBlank()) entries
         else entries.filter { it.name.contains(search.trim(), ignoreCase = true) }
@@ -199,7 +210,7 @@ fun MailPanel() {
         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Text("Mail", style = MaterialTheme.typography.headlineMedium)
+        Text("Mail", style = MaterialTheme.typography.titleLarge)
 
         if (account == null) {
             Column(
@@ -251,79 +262,57 @@ fun MailPanel() {
                 message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         } else {
-            Text(
-                "Подключено: " + account?.email.orEmpty(),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    "Облако подключено",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = { toolsExpanded = !toolsExpanded }) {
+                    Text(if (toolsExpanded) "Скрыть" else "Действия")
+                }
+            }
             Row(
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 DavPath.breadcrumbs(path).forEachIndexed { index, crumb ->
-                    if (index != 0) Text(" / ")
-                    TextButton(
-                        enabled = !busy && crumb.path != path,
-                        onClick = { browse(crumb.path) }
-                    ) { Text(crumb.title, maxLines = 1) }
+                    if (index != 0) Text(" / ", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        text = crumb.title,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (crumb.path == path) MaterialTheme.colorScheme.onSurface
+                                else MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        modifier = Modifier
+                            .clickable(enabled = !busy && crumb.path != path) { browse(crumb.path) }
+                            .padding(vertical = 4.dp, horizontal = 6.dp)
+                    )
                 }
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
             ) {
-                OutlinedButton(
+                TextButton(
                     enabled = !busy && path != "/",
-                    onClick = { browse(DavPath.parent(path)) },
-                    modifier = Modifier.weight(1f)
+                    onClick = { browse(DavPath.parent(path)) }
                 ) { Text("Назад") }
-                OutlinedButton(
-                    enabled = !busy,
-                    onClick = { browse(path) },
-                    modifier = Modifier.weight(1f)
-                ) { Text("Обновить") }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(
-                    enabled = !busy, onClick = { createFolderDialog = true },
-                    modifier = Modifier.weight(1f)
-                ) { Text("Новая папка") }
-                OutlinedButton(
-                    enabled = !busy, onClick = { uploadPicker.launch(arrayOf("*/*")) },
-                    modifier = Modifier.weight(1f)
-                ) { Text("Загрузить") }
-            }
-            OutlinedTextField(
-                value = search,
-                onValueChange = { search = it },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                label = { Text("Поиск в папке") }
-            )
-            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "Объектов: " + filtered.size,
+                    "· " + filtered.size,
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                if (busy) CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
-                TextButton(onClick = {
-                    store.clear()
-                    account = null
-                    path = "/"
-                    entries = emptyList()
-                    password = ""
-                    loadedPath = null
-                }) { Text("Отключить") }
-            }
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+                Spacer(Modifier.weight(1f))
+                TextButton(
+                    enabled = !busy, onClick = { browse(path) }
+                ) { Text("↻") }
                 FilterChip(
                     selected = !gridView, onClick = { gridView = false },
                     label = { Text("Список") }
@@ -333,11 +322,48 @@ fun MailPanel() {
                     label = { Text("Плитка") }
                 )
             }
+            if (toolsExpanded) {
+                Text(
+                    account?.email.orEmpty(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = search,
+                    onValueChange = { search = it },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Поиск в текущей папке") }
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        enabled = !busy, onClick = { createFolderDialog = true },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Новая папка") }
+                    OutlinedButton(
+                        enabled = !busy, onClick = { uploadPicker.launch(arrayOf("*/*")) },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Загрузить файл") }
+                }
+                TextButton(onClick = {
+                    store.clear()
+                    account = null
+                    path = "/"
+                    entries = emptyList()
+                    password = ""
+                    loadedPath = null
+                }) { Text("Отключить Mail на устройстве") }
+            }
+            if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (gridView) {
                 // Grid is lazy: preview requests start only for currently composed tiles.
                 // Do not run a gallery-wide background download.
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(2),
+                    state = gridState,
                     modifier = Modifier.fillMaxWidth().weight(1f),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -360,6 +386,7 @@ fun MailPanel() {
                 }
             } else {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxWidth().weight(1f),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     contentPadding = PaddingValues(bottom = 16.dp)
@@ -510,8 +537,12 @@ private fun MailGridTile(
                         Text("▧", style = MaterialTheme.typography.headlineLarge)
                     }
                 } else {
-                    Text(if (file.isDirectory) "▣" else "▤",
-                        style = MaterialTheme.typography.headlineLarge)
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(if (file.isDirectory) "📁" else "📄",
+                            style = MaterialTheme.typography.headlineLarge)
+                        Text(if (file.isDirectory) "Папка" else "Файл",
+                            style = MaterialTheme.typography.labelSmall)
+                    }
                 }
             }
             Text(
