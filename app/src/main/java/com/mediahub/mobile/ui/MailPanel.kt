@@ -1,179 +1,424 @@
 package com.mediahub.mobile.ui
 
+import android.graphics.BitmapFactory
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.documentfile.provider.DocumentFile
-import com.mediahub.mobile.mail.*
+import com.mediahub.mobile.mail.DavBreadcrumb
+import com.mediahub.mobile.mail.DavEntry
+import com.mediahub.mobile.mail.DavPath
+import com.mediahub.mobile.mail.MailAccount
+import com.mediahub.mobile.mail.MailWebDavClient
+import com.mediahub.mobile.mail.SecureMailAccountStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** Self-contained screen: no unconstrained children in the parent Box. */
 @Composable
 fun MailPanel() {
     val context = LocalContext.current
-    val store = remember { SecureMailAccountStore(context) }
-    var saved by remember { mutableStateOf(store.load()) }
-    var email by remember { mutableStateOf(saved?.email.orEmpty()) }
+    val store = remember(context) { SecureMailAccountStore(context) }
+    var account by remember { mutableStateOf(store.load()) }
+    var email by remember { mutableStateOf(account?.email.orEmpty()) }
     var password by remember { mutableStateOf("") }
     var path by remember { mutableStateOf("/") }
     var entries by remember { mutableStateOf<List<DavEntry>>(emptyList()) }
+    var loadedPath by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var search by remember { mutableStateOf("") }
     var newFolder by remember { mutableStateOf("") }
-    var showCreate by remember { mutableStateOf(false) }
-    var selected by remember { mutableStateOf<DavEntry?>(null) }
+    var createFolderDialog by remember { mutableStateOf(false) }
+    var selectedForDownload by remember { mutableStateOf<DavEntry?>(null) }
+    var selectedPreview by remember { mutableStateOf<DavEntry?>(null) }
+    var previewBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+    var previewLoading by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    fun client(): MailWebDavClient {
-        val account = saved ?: throw IllegalStateException("Не подключено.")
-        return MailWebDavClient(account.email, account.password)
+    fun newClient(): MailWebDavClient {
+        val saved = account ?: throw IllegalStateException("Mail не подключён.")
+        return MailWebDavClient(saved.email, saved.password)
     }
 
-    fun refresh() {
+    fun browse(target: String) {
+        if (busy) return
         scope.launch {
             busy = true
-            error = null
+            message = null
             try {
-                entries = withContext(Dispatchers.IO) { client().list(path) }
-            } catch (e: Exception) { error = e.message ?: "Ошибка подключения." }
-            finally { busy = false }
+                val result = withContext(Dispatchers.IO) { newClient().list(target) }
+                path = target
+                entries = result
+                loadedPath = target
+                search = ""
+            } catch (e: Exception) {
+                message = e.message ?: "Не удалось открыть папку."
+            } finally {
+                busy = false
+            }
         }
     }
 
-    val upload = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+    LaunchedEffect(account?.email) {
+        if (account != null && loadedPath == null) {
+            browse("/")
+        }
+    }
+
+    BackHandler(enabled = account != null && path != "/" && !busy && selectedPreview == null) {
+        browse(DavPath.parent(path))
+    }
+
+    val uploadPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
         if (uri != null) scope.launch {
             busy = true
-            error = null
+            message = null
             try {
                 withContext(Dispatchers.IO) {
-                    val file = DocumentFile.fromSingleUri(context, uri)
+                    val doc = DocumentFile.fromSingleUri(context, uri)
                         ?: throw IllegalArgumentException("Файл недоступен.")
-                    val name = file.name ?: throw IllegalArgumentException("Имя файла неизвестно.")
-                    client().upload(path, name, file.length().takeIf { it >= 0 },
-                        file.type) {
+                    val fileName = doc.name
+                        ?: throw IllegalArgumentException("Не удалось получить имя файла.")
+                    newClient().upload(path, fileName, doc.length().takeIf { it > 0L }, doc.type) {
                         context.contentResolver.openInputStream(uri)
                             ?: throw IllegalStateException("Нет доступа к файлу.")
                     }
                 }
-                refresh()
-            } catch (e: Exception) { error = e.message ?: "Ошибка загрузки." }
-            finally { busy = false }
+                // Call browse after busy reset to avoid ignored refresh.
+                busy = false
+                browse(path)
+            } catch (e: Exception) {
+                message = e.message ?: "Не удалось загрузить файл."
+                busy = false
+            }
         }
     }
 
-    val download = rememberLauncherForActivityResult(
+    val savePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/octet-stream")
     ) { uri ->
-        val file = selected
-        selected = null
+        val file = selectedForDownload
+        selectedForDownload = null
         if (uri != null && file != null) scope.launch {
             busy = true
-            error = null
+            message = null
             try {
                 withContext(Dispatchers.IO) {
                     val output = context.contentResolver.openOutputStream(uri, "w")
-                        ?: throw IllegalStateException("Нет доступа для записи.")
-                    output.use { client().download(file.path, it) }
+                        ?: throw IllegalStateException("Нет доступа для сохранения.")
+                    output.use { newClient().download(file.path, it) }
                 }
-            } catch (e: Exception) { error = e.message ?: "Ошибка скачивания." }
-            finally { busy = false }
+                message = "Файл сохранён."
+            } catch (e: Exception) {
+                message = e.message ?: "Не удалось скачать файл."
+            } finally {
+                busy = false
+            }
         }
     }
 
-    if (saved == null) {
-        InfoCard("Облако Mail", "Для подключения используется пароль внешнего приложения Mail, а не обычный пароль от почты. HTTPS обязателен.")
-        OutlinedTextField(value = email, onValueChange = { email = it },
-            label = { Text("Адрес почты") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(value = password, onValueChange = { password = it },
-            label = { Text("Пароль внешнего приложения") },
-            visualTransformation = PasswordVisualTransformation(),
-            singleLine = true, modifier = Modifier.fillMaxWidth())
-        Button(
-            enabled = email.contains("@") && password.isNotBlank() && !busy,
-            onClick = {
-                scope.launch {
-                    busy = true
-                    error = null
-                    try {
-                        val account = MailAccount(email.trim(), password)
-                        val listing = withContext(Dispatchers.IO) {
-                            MailWebDavClient(account.email, account.password).list("/")
-                        }
-                        store.save(account.email, account.password)
-                        saved = account
-                        password = ""
-                        path = "/"
-                        entries = listing
-                    } catch (e: Exception) { error = e.message ?: "Ошибка входа." }
-                    finally { busy = false }
+    fun preview(file: DavEntry) {
+        if (busy) return
+        selectedPreview = file
+        previewBitmap = null
+        previewLoading = true
+        scope.launch {
+            try {
+                val bitmap = withContext(Dispatchers.IO) {
+                    val bytes = newClient().previewImage(file.path)
+                    val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                    var sample = 1
+                    while (opts.outWidth / sample > 2048 || opts.outHeight / sample > 2048) {
+                        sample *= 2
+                    }
+                    val decoded = BitmapFactory.decodeByteArray(
+                        bytes, 0, bytes.size,
+                        BitmapFactory.Options().apply { inSampleSize = sample }
+                    ) ?: throw IllegalArgumentException("Не удалось прочитать изображение.")
+                    decoded.asImageBitmap()
                 }
-            }, modifier = Modifier.fillMaxWidth()
-        ) { Text("Проверить и подключить") }
-    } else {
-        Text("Mail: " + saved?.email, style = MaterialTheme.typography.titleMedium)
-        Text("Папка: " + path)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { path = DavPath.parent(path); refresh() },
-                enabled = path != "/" && !busy) { Text("Назад") }
-            OutlinedButton(onClick = { refresh() }, enabled = !busy) { Text("Обновить") }
-            Button(onClick = { showCreate = true }, enabled = !busy) { Text("Новая папка") }
-        }
-        OutlinedButton(onClick = { upload.launch(arrayOf("*/*")) }, enabled = !busy) {
-            Text("Загрузить файл в Mail")
-        }
-        if (entries.isEmpty() && !busy) Text("Файлов нет.")
-        LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 480.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            items(entries, key = { it.path }) { item ->
-                OutlinedButton(onClick = {
-                    if (item.isDirectory) { path = item.path; refresh() }
-                    else { selected = item; download.launch(item.name) }
-                }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
-                    Text((if (item.isDirectory) "▣ " else "◻ ") + item.name,
-                        modifier = Modifier.fillMaxWidth())
-                }
+                if (selectedPreview?.path == file.path) previewBitmap = bitmap
+            } catch (e: Exception) {
+                message = e.message ?: "Ошибка предпросмотра."
+                selectedPreview = null
+            } finally {
+                previewLoading = false
             }
         }
-        TextButton(onClick = {
-            store.clear()
-            saved = null
-            entries = emptyList()
-            path = "/"
-            password = ""
-        }) { Text("Отключить Mail на устройстве") }
     }
-    if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-    error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-    if (showCreate) AlertDialog(
-        onDismissRequest = { showCreate = false },
+
+    val filtered = remember(entries, search) {
+        if (search.isBlank()) entries
+        else entries.filter { it.name.contains(search.trim(), ignoreCase = true) }
+    }
+
+    Column(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text("Mail", style = MaterialTheme.typography.headlineMedium)
+
+        if (account == null) {
+            Column(
+                modifier = Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                InfoCard(
+                    "Облако Mail",
+                    "Для подключения используется пароль внешнего приложения Mail. Данные передаются через HTTPS."
+                )
+                OutlinedTextField(
+                    value = email, onValueChange = { email = it },
+                    modifier = Modifier.fillMaxWidth(), singleLine = true,
+                    label = { Text("Адрес почты") }
+                )
+                OutlinedTextField(
+                    value = password, onValueChange = { password = it },
+                    modifier = Modifier.fillMaxWidth(), singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    label = { Text("Пароль внешнего приложения") }
+                )
+                Button(
+                    enabled = email.contains("@") && password.isNotBlank() && !busy,
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        scope.launch {
+                            busy = true
+                            message = null
+                            try {
+                                val credentials = MailAccount(email.trim(), password)
+                                val list = withContext(Dispatchers.IO) {
+                                    MailWebDavClient(credentials.email, credentials.password).list("/")
+                                }
+                                store.save(credentials.email, credentials.password)
+                                path = "/"
+                                entries = list
+                                loadedPath = "/"
+                                password = ""
+                                account = credentials
+                            } catch (e: Exception) {
+                                message = e.message ?: "Не удалось подключиться."
+                            } finally {
+                                busy = false
+                            }
+                        }
+                    }
+                ) { Text("Проверить и подключить") }
+                if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        } else {
+            Text(
+                "Подключено: " + account?.email.orEmpty(),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                DavPath.breadcrumbs(path).forEachIndexed { index, crumb ->
+                    if (index != 0) Text(" / ")
+                    TextButton(
+                        enabled = !busy && crumb.path != path,
+                        onClick = { browse(crumb.path) }
+                    ) { Text(crumb.title, maxLines = 1) }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    enabled = !busy && path != "/",
+                    onClick = { browse(DavPath.parent(path)) },
+                    modifier = Modifier.weight(1f)
+                ) { Text("Назад") }
+                OutlinedButton(
+                    enabled = !busy,
+                    onClick = { browse(path) },
+                    modifier = Modifier.weight(1f)
+                ) { Text("Обновить") }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    enabled = !busy, onClick = { createFolderDialog = true },
+                    modifier = Modifier.weight(1f)
+                ) { Text("Новая папка") }
+                OutlinedButton(
+                    enabled = !busy, onClick = { uploadPicker.launch(arrayOf("*/*")) },
+                    modifier = Modifier.weight(1f)
+                ) { Text("Загрузить") }
+            }
+            OutlinedTextField(
+                value = search,
+                onValueChange = { search = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Поиск в папке") }
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Объектов: " + filtered.size,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                if (busy) CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                TextButton(onClick = {
+                    store.clear()
+                    account = null
+                    path = "/"
+                    entries = emptyList()
+                    password = ""
+                    loadedPath = null
+                }) { Text("Отключить") }
+            }
+            // This is the ONLY scrolling file list; it always receives bounded height.
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(bottom = 16.dp)
+            ) {
+                if (filtered.isEmpty() && !busy) {
+                    item { Text(if (search.isEmpty()) "Папка пуста." else "Совпадений нет.") }
+                }
+                items(filtered, key = { it.path }) { file ->
+                    val imageFile = !file.isDirectory && listOf("jpg", "jpeg", "png", "webp")
+                        .any { file.name.endsWith("." + it, ignoreCase = true) }
+                    Card(
+                        onClick = {
+                            when {
+                                file.isDirectory -> browse(file.path)
+                                imageFile -> preview(file)
+                                else -> {
+                                    selectedForDownload = file
+                                    savePicker.launch(file.name)
+                                }
+                            }
+                        },
+                        enabled = !busy,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(if (file.isDirectory) "▣" else if (imageFile) "▧" else "▤")
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                file.name,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (imageFile) TextButton(onClick = {
+                                selectedForDownload = file
+                                savePicker.launch(file.name)
+                            }) { Text("Скачать") }
+                        }
+                    }
+                }
+            }
+            message?.let {
+                Text(it, color = MaterialTheme.colorScheme.error)
+            }
+        }
+    }
+
+    if (selectedPreview != null) AlertDialog(
+        onDismissRequest = { selectedPreview = null; previewBitmap = null },
+        title = { Text(selectedPreview?.name.orEmpty(), maxLines = 2) },
+        text = {
+            if (previewLoading) {
+                CircularProgressIndicator()
+            } else {
+                previewBitmap?.let {
+                    Image(
+                        bitmap = it, contentDescription = "Предпросмотр фотографии",
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 440.dp),
+                        contentScale = ContentScale.Fit
+                    )
+                } ?: Text("Изображение недоступно.")
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val file = selectedPreview
+                selectedPreview = null
+                previewBitmap = null
+                if (file != null) {
+                    selectedForDownload = file
+                    savePicker.launch(file.name)
+                }
+            }) { Text("Скачать") }
+        },
+        dismissButton = {
+            TextButton(onClick = {
+                selectedPreview = null
+                previewBitmap = null
+            }) { Text("Закрыть") }
+        }
+    )
+
+    if (createFolderDialog) AlertDialog(
+        onDismissRequest = { createFolderDialog = false },
         title = { Text("Новая папка") },
-        text = { OutlinedTextField(value = newFolder, onValueChange = { newFolder = it },
-            label = { Text("Название") }) },
+        text = {
+            OutlinedTextField(
+                value = newFolder, onValueChange = { newFolder = it },
+                singleLine = true, label = { Text("Название") }
+            )
+        },
         confirmButton = {
             TextButton(onClick = {
                 val name = newFolder.trim()
-                showCreate = false
                 newFolder = ""
-                if (name.isNotEmpty()) scope.launch {
+                createFolderDialog = false
+                if (name.isNotEmpty() && name != "." && name != "..") scope.launch {
                     busy = true
-                    error = null
+                    message = null
                     try {
-                        withContext(Dispatchers.IO) { client().createFolder(path, name) }
-                        refresh()
-                    } catch (e: Exception) { error = e.message ?: "Ошибка." }
-                    finally { busy = false }
+                        withContext(Dispatchers.IO) {
+                            newClient().createFolder(path, name)
+                        }
+                        busy = false
+                        browse(path)
+                    } catch (e: Exception) {
+                        message = e.message ?: "Не удалось создать папку."
+                        busy = false
+                    }
                 }
             }) { Text("Создать") }
         },
-        dismissButton = { TextButton(onClick = { showCreate = false }) { Text("Отмена") } }
+        dismissButton = {
+            TextButton(onClick = { createFolderDialog = false }) { Text("Отмена") }
+        }
     )
 }
