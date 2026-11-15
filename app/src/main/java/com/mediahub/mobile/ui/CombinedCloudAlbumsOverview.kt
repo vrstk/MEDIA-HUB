@@ -212,6 +212,7 @@ internal fun CombinedCloudAlbumsOverview(
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     TextButton(onClick = { driveRefresh++ }) { Text("Повторить Google Drive") }
                 }
+            }
         }
     }
 }
