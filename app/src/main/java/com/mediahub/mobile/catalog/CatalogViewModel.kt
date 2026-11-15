@@ -47,6 +47,12 @@ internal sealed interface CatalogItem {
 
 internal data class CatalogPage(val items: List<CatalogItem>, val hasMore: Boolean)
 
+internal data class CatalogProfile(
+    val row: ProfileRow,
+    val terms: List<TaxonomyTerm>,
+    val folders: List<ProfileFolder>
+)
+
 @OptIn(ExperimentalCoroutinesApi::class)
 internal class CatalogViewModel(private val app: Application) : AndroidViewModel(app) {
     private val database = CatalogDatabase.open(app)
@@ -106,7 +112,20 @@ internal class CatalogViewModel(private val app: Application) : AndroidViewModel
         return CatalogPage(result.take(PAGE_SIZE), result.size > PAGE_SIZE)
     }
 
-    suspend fun terms(profileId: String) = dao.profileTerms(profileId)
+    suspend fun profileDetails(profileId: String): CatalogProfile? {
+        val row = dao.profile(profileId) ?: return null
+        return CatalogProfile(row, dao.profileTerms(profileId), dao.profileFolders(profileId))
+    }
+
+    suspend fun saveFolder(folder: ProfileFolder) {
+        dao.saveFolder(folder)
+        _revision.update { it + 1 }
+    }
+
+    suspend fun removeFolder(folder: ProfileFolder) {
+        dao.removeFolder(folder)
+        _revision.update { it + 1 }
+    }
 
     suspend fun saveName(profileId: String, value: String?): String? {
         if (value == null) {

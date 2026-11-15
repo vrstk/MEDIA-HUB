@@ -62,6 +62,8 @@ internal fun MailPanel(
     onAccountChanged: (MailAccount?) -> Unit,
     driveConnected: Boolean,
     copying: Boolean,
+    requestedFolder: String?,
+    onFolderRequestHandled: () -> Unit,
     onCopy: (MailWebDavClient, CloudNode) -> Unit
 ) {
     val context = LocalContext.current
@@ -95,8 +97,8 @@ internal fun MailPanel(
 
     fun browse(target: String) {
         if (busy) return
+        busy = true
         scope.launch {
-            busy = true
             message = null
             try {
                 val result = withContext(Dispatchers.IO) { newClient().list(target) }
@@ -114,8 +116,17 @@ internal fun MailPanel(
         }
     }
 
-    LaunchedEffect(account?.email) {
-        if (account != null && loadedPath == null) {
+    LaunchedEffect(account?.email, requestedFolder) {
+        if (account == null) return@LaunchedEffect
+        if (requestedFolder != null) {
+            path = requestedFolder
+            entries = emptyList()
+            loadedPath = null
+            search = ""
+            searchOpen = false
+            browse(requestedFolder)
+            onFolderRequestHandled()
+        } else if (loadedPath == null) {
             browse(path)
         }
     }

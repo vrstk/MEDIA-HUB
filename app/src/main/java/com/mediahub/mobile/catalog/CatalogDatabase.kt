@@ -1,8 +1,10 @@
 package com.mediahub.mobile.catalog
 
 import android.content.Context
+import androidx.room.AutoMigration
 import androidx.room.Dao
 import androidx.room.Database
+import androidx.room.Delete
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
@@ -169,6 +171,21 @@ internal interface CatalogDao {
     """)
     suspend fun profileTerms(profileId: String): List<TaxonomyTerm>
 
+    @Query("""
+        SELECT p.id, p.displayName AS archiveName, n.title AS localName, s.displayName AS sourceName,
+               p.sourceSnapshot, p.aliases, p.sourceUrl
+        FROM source_profiles p JOIN catalog_sources s ON p.sourceKey = s.id
+        LEFT JOIN profile_names n ON p.id = n.profileId
+        WHERE p.id = :id
+    """)
+    suspend fun profile(id: String): ProfileRow?
+
+    @Query("SELECT * FROM profile_folders WHERE profileId = :profileId ORDER BY storage, title COLLATE NOCASE, scopeKey, folderId")
+    suspend fun profileFolders(profileId: String): List<ProfileFolder>
+
+    @Upsert suspend fun saveFolder(folder: ProfileFolder)
+    @Delete suspend fun removeFolder(folder: ProfileFolder)
+
     @Upsert suspend fun saveProfileName(name: ProfileName)
     @Query("DELETE FROM profile_names WHERE profileId = :id")
     suspend fun resetProfileName(id: String)
@@ -177,9 +194,10 @@ internal interface CatalogDao {
 @Database(
     entities = [
         CatalogSource::class, SourceProfile::class, ProfileName::class,
-        TaxonomyTerm::class, ProfileTerm::class, CatalogImport::class
+        TaxonomyTerm::class, ProfileTerm::class, CatalogImport::class, ProfileFolder::class
     ],
-    version = 1,
+    version = 2,
+    autoMigrations = [AutoMigration(from = 1, to = 2)],
     exportSchema = true
 )
 internal abstract class CatalogDatabase : RoomDatabase() {

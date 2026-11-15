@@ -11,8 +11,8 @@ android {
         applicationId = "com.mediahub.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 16
-        versionName = "0.6.0"
+        versionCode = 17
+        versionName = "0.6.1"
         resValue("string", "app_name", "Media Hub")
     }
     buildTypes {
@@ -39,6 +39,7 @@ android {
     buildFeatures {
         compose = true
     }
+    sourceSets.getByName("test").resources.srcDir("schemas")
 }
 tasks.withType<Test>().configureEach {
     systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")

@@ -1,7 +1,5 @@
 package com.mediahub.mobile.ui
 
-import android.content.ActivityNotFoundException
-import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -10,7 +8,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -18,7 +15,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.FilterChip
@@ -41,10 +37,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.mediahub.mobile.catalog.CatalogCriteria
@@ -53,9 +49,9 @@ import com.mediahub.mobile.catalog.CatalogItem
 import com.mediahub.mobile.catalog.CatalogSection
 import com.mediahub.mobile.catalog.CatalogViewModel
 import com.mediahub.mobile.catalog.ImportPhase
-import com.mediahub.mobile.catalog.ProfileRow
-import com.mediahub.mobile.catalog.TaxonomyTerm
-import com.mediahub.mobile.catalog.isCatalogWebUrl
+import com.mediahub.mobile.catalog.ProfileFolder
+import com.mediahub.mobile.catalog.ProfileFolderAccess
+import com.mediahub.mobile.catalog.ProfileStorageKind
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -63,7 +59,32 @@ import java.text.NumberFormat
 import java.util.Locale
 
 @Composable
-internal fun CatalogPanel(model: CatalogViewModel, modifier: Modifier = Modifier) {
+internal fun CatalogPanel(
+    model: CatalogViewModel,
+    storage: List<ProfileFolderAccess>,
+    onConnect: (ProfileStorageKind) -> Unit,
+    onOpenFolder: (ProfileFolder) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var profileId by rememberSaveable { mutableStateOf<String?>(null) }
+    var requestedTermId by rememberSaveable { mutableStateOf<String?>(null) }
+    var requestedTermLabel by rememberSaveable { mutableStateOf<String?>(null) }
+    val browserState = rememberSaveableStateHolder()
+    val activeProfile = profileId
+    if (activeProfile != null) {
+        CatalogProfilePanel(
+            model, activeProfile, storage, onConnect, onOpenFolder,
+            onBack = { profileId = null },
+            onTerm = {
+                requestedTermId = it.id
+                requestedTermLabel = it.labelRu
+                profileId = null
+            },
+            modifier = modifier
+        )
+        return
+    }
+
     val summary by model.summary.collectAsState()
     val importState by model.importState.collectAsState()
     val summaryError by model.summaryError.collectAsState()
@@ -104,7 +125,14 @@ internal fun CatalogPanel(model: CatalogViewModel, modifier: Modifier = Modifier
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                CatalogBrowser(model, counts.unnamed)
+                browserState.SaveableStateProvider("browser") {
+                    CatalogBrowser(
+                        model, counts.unnamed,
+                        requestedTermId, requestedTermLabel,
+                        onTermApplied = { requestedTermId = null; requestedTermLabel = null },
+                        onOpenProfile = { profileId = it }
+                    )
+                }
             }
         }
     }
@@ -171,14 +199,20 @@ private class CatalogItems {
 }
 
 @Composable
-private fun CatalogBrowser(model: CatalogViewModel, unnamedCount: Int) {
+private fun CatalogBrowser(
+    model: CatalogViewModel,
+    unnamedCount: Int,
+    requestedTermId: String?,
+    requestedTermLabel: String?,
+    onTermApplied: () -> Unit,
+    onOpenProfile: (String) -> Unit
+) {
     var sectionIndex by rememberSaveable { mutableIntStateOf(CatalogSection.PROFILES.ordinal) }
     var nameQuery by rememberSaveable { mutableStateOf("") }
     var taxonomyQuery by rememberSaveable { mutableStateOf("") }
     var unnamed by rememberSaveable { mutableStateOf(false) }
     var termId by rememberSaveable { mutableStateOf<String?>(null) }
     var termLabel by rememberSaveable { mutableStateOf<String?>(null) }
-    var selectedProfile by remember { mutableStateOf<ProfileRow?>(null) }
     val section = CatalogSection.entries[sectionIndex]
     val profiles = section == CatalogSection.PROFILES
     val query = if (profiles) nameQuery else taxonomyQuery
@@ -187,6 +221,21 @@ private fun CatalogBrowser(model: CatalogViewModel, unnamedCount: Int) {
     val entries = remember(criteria, revision) { CatalogItems() }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+
+    fun filterByTerm(id: String, label: String) {
+        termId = id
+        termLabel = label
+        nameQuery = ""
+        unnamed = false
+        sectionIndex = CatalogSection.PROFILES.ordinal
+    }
+
+    LaunchedEffect(requestedTermId, requestedTermLabel) {
+        if (requestedTermId != null && requestedTermLabel != null) {
+            filterByTerm(requestedTermId, requestedTermLabel)
+            onTermApplied()
+        }
+    }
 
     LaunchedEffect(entries) {
         if (criteria.text.isNotEmpty()) delay(180)
@@ -239,16 +288,17 @@ private fun CatalogBrowser(model: CatalogViewModel, unnamedCount: Int) {
         ) {
             items(entries.rows, key = { it.id }) { entry ->
                 when (entry) {
-                    is CatalogItem.Profile -> CatalogRow(
-                        title = entry.row.title,
-                        description = listOfNotNull(entry.row.sourceName, entry.row.sourceSnapshot).joinToString(" · ")
-                    ) { selectedProfile = entry.row }
+                    is CatalogItem.Profile -> {
+                        val row = entry.row
+                        val reference = if (row.archiveName == null && row.localName == null) {
+                            Uri.parse(row.sourceUrl).lastPathSegment
+                        } else row.sourceSnapshot
+                        CatalogRow(row.title, listOfNotNull(row.sourceName, reference).joinToString(" · ")) {
+                            onOpenProfile(row.id)
+                        }
+                    }
                     is CatalogItem.Term -> CatalogRow(entry.row.labelRu, entry.row.label) {
-                        termId = entry.row.id
-                        termLabel = entry.row.labelRu
-                        nameQuery = ""
-                        unnamed = false
-                        sectionIndex = CatalogSection.PROFILES.ordinal
+                        filterByTerm(entry.row.id, entry.row.labelRu)
                     }
                 }
             }
@@ -270,17 +320,6 @@ private fun CatalogBrowser(model: CatalogViewModel, unnamedCount: Int) {
         }
     }
 
-    selectedProfile?.let { row ->
-        ProfileDetails(model, row, onDismiss = { selectedProfile = null }) {
-            val term = it
-            selectedProfile = null
-            termId = term.id
-            termLabel = term.labelRu
-            nameQuery = ""
-            unnamed = false
-            sectionIndex = CatalogSection.PROFILES.ordinal
-        }
-    }
 }
 
 @Composable
@@ -290,105 +329,6 @@ private fun CatalogRow(title: String, description: String, onOpen: () -> Unit) {
             Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Text(description, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-    }
-}
-
-@Composable
-private fun ProfileDetails(
-    model: CatalogViewModel,
-    row: ProfileRow,
-    onDismiss: () -> Unit,
-    onTerm: (TaxonomyTerm) -> Unit
-) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var localName by remember { mutableStateOf(row.localName) }
-    var terms by remember { mutableStateOf<List<TaxonomyTerm>>(emptyList()) }
-    var editing by rememberSaveable { mutableStateOf(false) }
-    var saveError by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(row.id) {
-        try {
-            terms = model.terms(row.id)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            saveError = "Связанные теги недоступны."
-        }
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(localName ?: row.archiveName ?: "Без имени", maxLines = 2, overflow = TextOverflow.Ellipsis) },
-        text = {
-            LazyColumn(Modifier.heightIn(max = 360.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                item {
-                    Text(row.sourceName, style = MaterialTheme.typography.titleSmall)
-                    row.sourceSnapshot?.let { Text("Снимок от $it", style = MaterialTheme.typography.bodySmall) }
-                    if (localName != null && row.archiveName != null) Text("В архиве — ${row.archiveName}")
-                    row.aliases?.takeIf { it.isNotBlank() }?.let { Text("Псевдонимы — $it") }
-                    Text(row.sourceUrl, style = MaterialTheme.typography.bodySmall)
-                    TextButton(enabled = isCatalogWebUrl(row.sourceUrl), onClick = {
-                        try {
-                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(row.sourceUrl)))
-                        } catch (_: ActivityNotFoundException) {
-                            saveError = "Не найден браузер для открытия ссылки."
-                        }
-                    }) { Text("Открыть источник") }
-                    saveError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                }
-                if (terms.isNotEmpty()) {
-                    item { Text("Категории и теги", style = MaterialTheme.typography.titleSmall) }
-                    items(terms, key = { it.id }) { term ->
-                        TextButton(onClick = { onTerm(term) }, modifier = Modifier.fillMaxWidth()) {
-                            Text(term.labelRu, modifier = Modifier.fillMaxWidth())
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = { editing = true }) { Text("Своё имя") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } }
-    )
-
-    if (editing) {
-        var value by rememberSaveable { mutableStateOf(localName ?: row.archiveName.orEmpty()) }
-        var saving by remember { mutableStateOf(false) }
-
-        fun save(name: String?) {
-            saving = true
-            scope.launch {
-                try {
-                    localName = model.saveName(row.id, name)
-                    saveError = null
-                    editing = false
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    saveError = "Не удалось сохранить имя."
-                    editing = false
-                } finally {
-                    saving = false
-                }
-            }
-        }
-        AlertDialog(
-            onDismissRequest = { if (!saving) editing = false },
-            title = { Text("Имя в медиатеке") },
-            text = {
-                Column {
-                    OutlinedTextField(value, { if (it.length <= 120) value = it },
-                        singleLine = true, label = { Text("Имя") }, enabled = !saving)
-                    if (localName != null) {
-                        TextButton(onClick = { save(null) }, enabled = !saving) { Text("Вернуть имя из архива") }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { save(value) }, enabled = !saving && value.isNotBlank()) { Text("Сохранить") }
-            },
-            dismissButton = { TextButton(onClick = { editing = false }, enabled = !saving) { Text("Отмена") } }
-        )
     }
 }
 

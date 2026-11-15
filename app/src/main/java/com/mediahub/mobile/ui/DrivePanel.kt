@@ -99,6 +99,8 @@ internal fun DrivePanel(
     onExpired: () -> Unit,
     onSelectFolder: () -> Unit,
     onDisconnectFolder: () -> Unit,
+    requestedTrail: List<CloudNode>?,
+    onFolderRequestHandled: () -> Unit,
     onCopy: (CloudNode) -> Unit
 ) {
     if (drive == null) {
@@ -132,7 +134,12 @@ internal fun DrivePanel(
         return
     }
 
-    val path = remember(drive) { mutableStateListOf(drive.root) }
+    val path = remember(drive) {
+        mutableStateListOf<CloudNode>().apply { addAll(requestedTrail ?: listOf(drive.root)) }
+    }
+    LaunchedEffect(requestedTrail) {
+        if (requestedTrail != null) onFolderRequestHandled()
+    }
     val folder = path.last()
     var refresh by remember { mutableIntStateOf(0) }
     var creating by remember { mutableStateOf(false) }
@@ -164,7 +171,7 @@ internal fun DrivePanel(
         }
         if (!mailConnected) Text("Подключите Mail, чтобы копировать файлы между облаками.")
         if (state.loading || creating) LinearProgressIndicator(Modifier.fillMaxWidth())
-        (error ?: state.error)?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        (error ?: state.error ?: driveError)?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         LazyColumn(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(6.dp)
