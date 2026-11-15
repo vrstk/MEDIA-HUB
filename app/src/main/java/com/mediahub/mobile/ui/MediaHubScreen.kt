@@ -159,8 +159,27 @@ internal fun MediaHubScreen(
                 }
             }
         } else if (current == Screen.LIBRARY) {
-            screenState.SaveableStateProvider("library") {
-                CatalogPanel(
+            var libraryTab by rememberSaveable { mutableIntStateOf(0) }
+            Column(Modifier.fillMaxSize().padding(padding)) {
+                PrimaryTabRow(selectedTabIndex = libraryTab) {
+                    Tab(selected = libraryTab == 0, onClick = { libraryTab = 0 },
+                        text = { Text("Галереи") })
+                    Tab(selected = libraryTab == 1, onClick = { libraryTab = 1 },
+                        text = { Text("Каталог") })
+                }
+                if (libraryTab == 0) {
+                    screenState.SaveableStateProvider("albums") {
+                        CloudAlbumsPanel(
+                            mail = mail,
+                            drive = safDrive ?: drive,
+                            onOpenMail = { selected = Screen.MAIL.ordinal },
+                            onOpenDrive = { showDrive = true; selected = Screen.FILES.ordinal },
+                            onDriveExpired = transfers::expireDrive,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                } else screenState.SaveableStateProvider("library") {
+                    CatalogPanel(
                     catalog, profileStorage,
                     onConnect = { kind ->
                         profileDestination = storageScreen(kind).ordinal
@@ -175,8 +194,9 @@ internal fun MediaHubScreen(
                             goToStorage(kind)
                         }
                     },
-                    modifier = Modifier.padding(padding)
+                    modifier = Modifier.fillMaxSize()
                 )
+                }
             }
         } else if (current == Screen.FILES) {
             Column(
