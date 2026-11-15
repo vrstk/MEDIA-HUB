@@ -400,7 +400,7 @@ internal fun MailPanel(
                             file = file,
                             loader = thumbnailLoader,
                             enabled = !busy,
-                            copyEnabled = driveConnected && !copying && !file.isDirectory,
+                            copyEnabled = driveConnected && !copying,
                             onCopy = { onCopy(newClient(), file.toCloudNode()) },
                             onOpen = { openFile(file) }
                         )
@@ -435,7 +435,12 @@ internal fun MailPanel(
                                     maxLines = 2,
                                     overflow = TextOverflow.Ellipsis
                                 )
-                                if (!file.isDirectory) {
+                                if (file.isDirectory) {
+                                    if (driveConnected) TextButton(
+                                        enabled = !busy && !copying,
+                                        onClick = { onCopy(newClient(), file.toCloudNode()) }
+                                    ) { Text("В Drive") }
+                                } else {
                                     MailFileActions(
                                         enabled = !busy,
                                         copyEnabled = driveConnected && !copying,

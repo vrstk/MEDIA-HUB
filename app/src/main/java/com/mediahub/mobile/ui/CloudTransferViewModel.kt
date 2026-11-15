@@ -3,6 +3,7 @@ package com.mediahub.mobile.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.mediahub.mobile.domain.CloudFileCopy
+import com.mediahub.mobile.domain.CloudFolderCopy
 import com.mediahub.mobile.domain.CloudNode
 import com.mediahub.mobile.domain.CloudProvider
 import com.mediahub.mobile.domain.CopyPhase
@@ -43,9 +44,10 @@ internal sealed interface CopyState {
     data class Running(
         override val name: String,
         val progress: CopyProgress? = null,
-        val cancelling: Boolean = false
+        val cancelling: Boolean = false,
+        val folderCopy: Boolean = false
     ) : CopyState
-    data class Verified(override val name: String, val size: Long) : CopyState
+    data class Verified(override val name: String, val size: Long, val files: Int = 1, val folders: Int = 0) : CopyState
     data class Failed(override val name: String, val message: String) : CopyState
     data class Cancelled(override val name: String) : CopyState
 }
@@ -133,14 +135,32 @@ internal class CloudTransferViewModel : ViewModel() {
         if (_selection.value !== selection || _copy.value is CopyState.Running) return false
         val name = selection.file.name
         _selection.value = null
-        _copy.value = CopyState.Running(name)
+        _copy.value = CopyState.Running(name, folderCopy = selection.file.isFolder)
         copiedJob = viewModelScope.launch {
             val execution = coroutineContext
             try {
-                val size = runInterruptible(Dispatchers.IO) {
-                    var lastPhase: CopyPhase? = null
-                    var lastUpdate = 0L
-                    CloudFileCopy.run(
+                val result = runInterruptible(Dispatchers.IO) {
+                    if (selection.file.isFolder) {
+                        val result = CloudFolderCopy.run(
+                            selection.provider, selection.file, selection.target, folder,
+                            checkpoint = { execution.ensureActive() },
+                            report = { progress ->
+                                _copy.update { current ->
+                                    if (current is CopyState.Running && !current.cancelling) {
+                                        current.copy(progress = CopyProgress(
+                                            progress.phase ?: CopyPhase.COPYING,
+                                            progress.completedFiles.toLong(),
+                                            progress.totalFiles.toLong()
+                                        ))
+                                    } else current
+                                }
+                            }
+                        )
+                        Triple(result.copiedBytes, result.copiedFiles, result.createdFolders)
+                    } else {
+                        var lastPhase: CopyPhase? = null
+                        var lastUpdate = 0L
+                        val bytes = CloudFileCopy.run(
                         selection.provider, selection.file, selection.target, folder,
                         checkpoint = { execution.ensureActive() },
                         report = { progress ->
@@ -157,9 +177,11 @@ internal class CloudTransferViewModel : ViewModel() {
                                 lastUpdate = now
                             }
                         }
-                    )
+                        )
+                        Triple(bytes, 1, 0)
+                    }
                 }
-                _copy.value = CopyState.Verified(name, size)
+                _copy.value = CopyState.Verified(name, result.first, result.second, result.third)
             } catch (e: CancellationException) {
                 _copy.value = CopyState.Cancelled(name)
                 throw e

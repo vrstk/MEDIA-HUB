@@ -174,12 +174,19 @@ internal fun DrivePanel(
             }
             items(state.nodes, key = { it.id }) { node ->
                 if (node.isFolder) {
-                    OutlinedButton(
-                        onClick = { path.add(node); error = null },
-                        enabled = !creating,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(node.name, modifier = Modifier.fillMaxWidth(), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = { path.add(node); error = null },
+                            enabled = !creating,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(node.name, modifier = Modifier.fillMaxWidth(),
+                                maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                        if (mailConnected) TextButton(
+                            onClick = { onCopy(node) },
+                            enabled = !copying && !creating
+                        ) { Text("В Mail") }
                     }
                 } else {
                     Card(Modifier.fillMaxWidth()) {

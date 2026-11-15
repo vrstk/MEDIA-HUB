@@ -48,6 +48,7 @@ internal fun CloudCopyDialog(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("${selection.site.label} → ${selection.site.other.label}")
                 Text(selection.file.name, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (selection.file.isFolder) Text("Будут скопированы все вложенные папки и файлы. Исходники останутся. При ошибке неполную копию нужно проверить вручную.", style = MaterialTheme.typography.bodySmall)
                 selection.file.sizeBytes?.let { Text(Formatter.formatFileSize(context, it)) }
                 Text(path.joinToString(" / ") { it.name }, style = MaterialTheme.typography.titleSmall,
                     maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -99,7 +100,7 @@ internal fun CloudCopyTask(state: CopyState?, onCancel: () -> Unit) {
             Text(when {
                 state.cancelling -> "Остановка…"
                 progress?.phase == CopyPhase.VERIFYING -> "Проверка копии"
-                progress != null -> "Копирование"
+                progress != null -> if (state.folderCopy) "Копирование файлов папки" else "Копирование"
                 else -> "Подготовка передачи"
             })
             if (progress == null || progress.total == 0L) {
@@ -109,12 +110,15 @@ internal fun CloudCopyTask(state: CopyState?, onCancel: () -> Unit) {
                     progress = { (progress.done.toDouble() / progress.total).toFloat().coerceIn(0f, 1f) },
                     modifier = Modifier.fillMaxWidth()
                 )
-                Text("${Formatter.formatFileSize(context, progress.done)} из ${Formatter.formatFileSize(context, progress.total)}")
+                if (state.folderCopy) Text("${progress.done} из ${progress.total} файлов")
+                else Text("${Formatter.formatFileSize(context, progress.done)} из ${Formatter.formatFileSize(context, progress.total)}")
             }
             TextButton(onClick = onCancel, enabled = !state.cancelling) { Text("Отменить") }
         }
         is CopyState.Verified -> InfoCard(state.name,
-            "Содержимое копии проверено по SHA-256 · ${Formatter.formatFileSize(context, state.size)}. Для папок через Android синхронизацию с Google Drive проверьте отдельно.")
+            "Проверено файлов: ${state.files}, создано папок: ${state.folders}. " +
+            "Всего: ${Formatter.formatFileSize(context, state.size)}. " +
+            "Для Google Drive синхронизацию с сервером проверьте отдельно.")
         is CopyState.Failed -> InfoCard(state.name, state.message)
         is CopyState.Cancelled -> InfoCard(state.name, "Передача остановлена. Проверьте папку назначения перед повтором.")
     }
