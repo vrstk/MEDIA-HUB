@@ -82,6 +82,8 @@ internal fun CloudAlbumsPanel(
     val context = LocalContext.current
     val bookmarksStore = remember(context) { AlbumBookmarkStore(context) }
     var bookmarks by remember(bookmarksStore) { mutableStateOf(bookmarksStore.load()) }
+    val coverStore = remember(context) { AlbumCoverStore(context) }
+    var chosenCovers by remember(coverStore) { mutableStateOf(coverStore.load()) }
     val identity = if (source == 0) mailIdentity else driveIdentity
     val sourceKey = remember(source, identity) {
         albumBookmarkScope(if (source == 0) "mail" else "drive", identity.orEmpty())
@@ -129,7 +131,7 @@ internal fun CloudAlbumsPanel(
             }
         }
         // Metadata only: never store downloaded photo bytes for every album.
-        val covers = remember(provider) { mutableMapOf<String, CloudNode?>() }
+        val covers = remember(provider, refresh) { mutableMapOf<String, List<CloudNode>>() }
         val coverRequests = remember(provider) { Semaphore(2) }
 
         fun back() {
@@ -143,6 +145,14 @@ internal fun CloudAlbumsPanel(
         LaunchedEffect(folder.id, filter, query) { gridState.scrollToItem(0) }
         val savedAlbums = remember(bookmarks, sourceKey, provider.root.id) {
             bookmarks.filter { it.scope == sourceKey && it.trail.firstOrNull()?.id == provider.root.id }
+        }
+        val selectedFolderCover = chosenCovers.firstOrNull {
+            it.scope == sourceKey && it.folderId == folder.id
+        }
+        fun chooseCover(photo: CloudNode?) {
+            val next = setAlbumCover(chosenCovers, sourceKey, folder.id, photo)
+            coverStore.save(next)
+            chosenCovers = next
         }
 
         if (savedAlbums.isNotEmpty()) {
@@ -187,6 +197,15 @@ internal fun CloudAlbumsPanel(
             )
             TextButton(onClick = { refresh++ }, enabled = !contents.loading) {
                 Text("Обновить")
+            }
+        }
+        if (trail.size > 1 && selectedFolderCover != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Своя обложка: ${selectedFolderCover.photo.name}",
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.labelSmall)
+                TextButton(onClick = { chooseCover(null) }) { Text("Авто") }
             }
         }
         OutlinedTextField(
@@ -239,6 +258,10 @@ internal fun CloudAlbumsPanel(
                     loader = previewLoader,
                     coverCache = covers,
                     semaphore = coverRequests,
+                    manualCover = chosenCovers.firstOrNull {
+                        it.scope == sourceKey && it.folderId == node.id
+                    }?.photo,
+                    refresh = refresh,
                     saved = node.isFolder && savedAlbums.any { it.id == node.id },
                     onToggleSaved = if (node.isFolder) ({
                         val next = toggleAlbumBookmark(
@@ -278,7 +301,14 @@ internal fun CloudAlbumsPanel(
                 loader = previewLoader,
                 onClose = { photoId = null },
                 onLoadFailure = {}
-            ) { /* Viewing here is read-only. File transfers remain in Файлы/Mail. */ }
+            ) { file ->
+                if (trail.size > 1) {
+                    val isCover = selectedFolderCover?.photo?.id == file.id
+                    TextButton(onClick = { chooseCover(file) }) {
+                        Text(if (isCover) "Обложка ✓" else "На обложку")
+                    }
+                }
+            }
         }
     }
 }
@@ -288,32 +318,44 @@ private fun AlbumBrowserTile(
     node: CloudNode,
     provider: CloudProvider,
     loader: PhotoPreviewLoader,
-    coverCache: MutableMap<String, CloudNode?>,
+    coverCache: MutableMap<String, List<CloudNode>>,
     semaphore: Semaphore,
+    manualCover: CloudNode?,
+    refresh: Int,
     saved: Boolean,
     onToggleSaved: (() -> Unit)?,
     onOpen: () -> Unit
 ) {
     val cover by produceState<Bitmap?>(
-        initialValue = null, key1 = node.id, key2 = provider
+        null, node.id, provider, manualCover, refresh
     ) {
-        value = try {
-            semaphore.withPermit {
-                val photo = if (!node.isFolder) node else {
-                    if (!coverCache.containsKey(node.id)) {
-                        // One page only, and only for a tile currently on screen.
-                        val children = runInterruptible(Dispatchers.IO) {
-                            provider.list(node.id).nodes
-                        }
-                        coverCache[node.id] = children.firstOrNull(MediaFileKinds::isPhoto)
-                    }
-                    coverCache[node.id]
-                }
-                photo?.takeIf(MediaFileKinds::isPhoto)?.let { loader.thumbnail(it) }
+        value = semaphore.withPermit {
+            suspend fun tryThumbnail(file: CloudNode): Bitmap? = try {
+                loader.thumbnail(file)
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (_: Exception) {
+                null
             }
-        } catch (cancel: CancellationException) {
-            throw cancel
-        } catch (_: Exception) {
+
+            // Manual cover is always attempted first, but stale links do not hide the album.
+            val selected = manualCover?.takeIf(MediaFileKinds::isPhoto)?.let { tryThumbnail(it) }
+            if (selected != null) return@withPermit selected
+            if (!node.isFolder) return@withPermit tryThumbnail(node)
+            val candidates = try {
+                coverCache[node.id] ?: runInterruptible(Dispatchers.IO) {
+                    autoCoverCandidates(provider.list(node.id).nodes)
+                }.also { coverCache[node.id] = it }
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (_: Exception) {
+                emptyList()
+            }
+            for (candidate in candidates) {
+                if (candidate.id == manualCover?.id) continue
+                val bitmap = tryThumbnail(candidate)
+                if (bitmap != null) return@withPermit bitmap
+            }
             null
         }
     }
