@@ -1,16 +1,13 @@
 package com.mediahub.mobile.ui
 
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
@@ -20,38 +17,28 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.documentfile.provider.DocumentFile
 import com.mediahub.mobile.domain.CloudNode
 import com.mediahub.mobile.mail.DavEntry
 import com.mediahub.mobile.mail.DavPath
 import com.mediahub.mobile.mail.MailAccount
 import com.mediahub.mobile.mail.MailWebDavClient
-import com.mediahub.mobile.mail.MailThumbnailLoader
-import com.mediahub.mobile.mail.MediaFileKinds
 import com.mediahub.mobile.mail.SecureMailAccountStore
 import com.mediahub.mobile.mail.toCloudNode
+import com.mediahub.mobile.media.MediaFileKinds
+import com.mediahub.mobile.media.PhotoPreviewLoader
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 
 /** Self-contained screen: no unconstrained children in the parent Box. */
@@ -83,17 +70,14 @@ internal fun MailPanel(
     val listState = rememberLazyListState()
     val gridState = rememberLazyGridState()
     var createFolderDialog by remember { mutableStateOf(false) }
-    var selectedForDownload by remember { mutableStateOf<DavEntry?>(null) }
-    var selectedPreview by remember { mutableStateOf<DavEntry?>(null) }
-    var previewBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
-    var previewLoading by remember { mutableStateOf(false) }
-    var previewError by remember { mutableStateOf<String?>(null) }
-    var previewJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    var selectedForDownload by remember { mutableStateOf<CloudNode?>(null) }
+    var selectedPhotoId by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val client = remember(account) { account?.let { MailWebDavClient(it.email, it.password) } }
-    val thumbnailLoader = remember(client) { client?.let(::MailThumbnailLoader) }
-
     fun newClient() = client ?: error("Mail не подключён.")
+    val photoLoader = remember(client, entries) {
+        PhotoPreviewLoader { file, maxBytes -> newClient().previewImage(file.id, maxBytes) }
+    }
 
     fun browse(target: String) {
         if (busy) return
@@ -131,7 +115,7 @@ internal fun MailPanel(
         }
     }
 
-    BackHandler(enabled = account != null && path != "/" && !busy && selectedPreview == null) {
+    BackHandler(enabled = account != null && path != "/" && !busy && selectedPhotoId == null) {
         browse(DavPath.parent(path))
     }
 
@@ -176,7 +160,7 @@ internal fun MailPanel(
                 withContext(Dispatchers.IO) {
                     val output = context.contentResolver.openOutputStream(uri, "w")
                         ?: throw IllegalStateException("Нет доступа для сохранения.")
-                    output.use { newClient().download(file.path, it) }
+                    output.use { newClient().download(file.id, it) }
                 }
                 message = "Файл сохранён."
             } catch (e: CancellationException) {
@@ -189,62 +173,16 @@ internal fun MailPanel(
         }
     }
 
-    fun closePreview() {
-        previewJob?.cancel()
-        selectedPreview = null
-        previewBitmap = null
+    fun download(file: CloudNode) {
+        selectedForDownload = file
+        savePicker.launch(file.name)
     }
 
-    fun preview(file: DavEntry) {
-        if (busy) return
-        previewJob?.cancel()
-        selectedPreview = file
-        previewBitmap = null
-        previewError = null
-        previewLoading = true
-        previewJob = scope.launch {
-            try {
-                val bitmap = runInterruptible(Dispatchers.IO) {
-                    val bytes = newClient().previewImage(file.path)
-                    val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
-                    var sample = 1
-                    while (opts.outWidth / sample > 2048 || opts.outHeight / sample > 2048) {
-                        sample *= 2
-                    }
-                    val decoded = BitmapFactory.decodeByteArray(
-                        bytes, 0, bytes.size,
-                        BitmapFactory.Options().apply { inSampleSize = sample }
-                    ) ?: throw IllegalArgumentException("Не удалось прочитать изображение.")
-                    decoded.asImageBitmap()
-                }
-                if (selectedPreview?.path == file.path) previewBitmap = bitmap
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                if (selectedPreview?.path == file.path) {
-                    previewError = if (e is java.net.SocketException ||
-                        e is java.io.EOFException || e is java.net.ProtocolException ||
-                        e is java.net.SocketTimeoutException
-                    ) "Соединение с Mail прервалось. Нажмите «Повторить»." else
-                        e.userMessage("Ошибка предпросмотра.")
-                }
-            } finally {
-                if (selectedPreview?.path == file.path && currentCoroutineContext().isActive) {
-                    previewLoading = false
-                }
-            }
-        }
-    }
-
-    fun openFile(file: DavEntry) {
+    fun openFile(file: CloudNode) {
         when {
-            file.isDirectory -> browse(file.path)
-            MediaFileKinds.isImage(file.name) -> preview(file)
-            else -> {
-                selectedForDownload = file
-                savePicker.launch(file.name)
-            }
+            file.isFolder -> browse(file.id)
+            MediaFileKinds.isPhoto(file) -> selectedPhotoId = file.id
+            else -> download(file)
         }
     }
 
@@ -254,8 +192,9 @@ internal fun MailPanel(
     }
 
     val filtered = remember(entries, search) {
-        if (search.isBlank()) entries
-        else entries.filter { it.name.contains(search.trim(), ignoreCase = true) }
+        val query = search.trim()
+        entries.asSequence().filter { it.name.contains(query, ignoreCase = true) }
+            .map(DavEntry::toCloudNode).toList()
     }
 
     Column(
@@ -401,19 +340,18 @@ internal fun MailPanel(
                     contentPadding = PaddingValues(bottom = 16.dp)
                 ) {
                     if (filtered.isEmpty() && !busy && loadedPath == path) {
-                        item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(2) }) {
+                        item(span = { GridItemSpan(maxLineSpan) }) {
                             Text(if (search.isEmpty()) "Папка пуста." else "Совпадений нет.")
                         }
                     }
-                    items(filtered.size, key = { filtered[it].path }) { index ->
+                    items(filtered.size, key = { filtered[it].id }) { index ->
                         val file = filtered[index]
-                        MailGridTile(
+                        StorageGridTile(
                             file = file,
-                            loader = thumbnailLoader,
-                            enabled = !busy,
-                            copyEnabled = driveConnected && !copying,
-                            onCopy = { onCopy(newClient(), file.toCloudNode()) },
-                            onOpen = { openFile(file) }
+                            loader = photoLoader,
+                            onOpen = if (busy) null else ({ openFile(file) }),
+                            onCopy = if (busy || !driveConnected || copying) null else ({ onCopy(newClient(), file) }),
+                            copyDescription = "Копировать в Google Drive"
                         )
                     }
                 }
@@ -427,8 +365,8 @@ internal fun MailPanel(
                     if (filtered.isEmpty() && !busy && loadedPath == path) {
                         item { Text(if (search.isEmpty()) "Папка пуста." else "Совпадений нет.") }
                     }
-                    items(filtered, key = { it.path }) { file ->
-                        val imageFile = !file.isDirectory && MediaFileKinds.isImage(file.name)
+                    items(filtered, key = { it.id }) { file ->
+                        val imageFile = MediaFileKinds.isPhoto(file)
                         Card(
                             onClick = { openFile(file) },
                             enabled = !busy,
@@ -438,7 +376,7 @@ internal fun MailPanel(
                                 modifier = Modifier.fillMaxWidth().padding(12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(if (file.isDirectory) "▣" else if (imageFile) "▧" else "▤")
+                                Text(if (file.isFolder) "▣" else if (imageFile) "▧" else "▤")
                                 Spacer(Modifier.width(10.dp))
                                 Text(
                                     file.name,
@@ -446,17 +384,17 @@ internal fun MailPanel(
                                     maxLines = 2,
                                     overflow = TextOverflow.Ellipsis
                                 )
-                                if (file.isDirectory) {
+                                if (file.isFolder) {
                                     if (driveConnected) TextButton(
                                         enabled = !busy && !copying,
-                                        onClick = { onCopy(newClient(), file.toCloudNode()) }
+                                        onClick = { onCopy(newClient(), file) }
                                     ) { Text("В Drive") }
                                 } else {
                                     MailFileActions(
                                         enabled = !busy,
                                         copyEnabled = driveConnected && !copying,
-                                        onDownload = { selectedForDownload = file; savePicker.launch(file.name) },
-                                        onCopy = { onCopy(newClient(), file.toCloudNode()) }
+                                        onDownload = { download(file) },
+                                        onCopy = { onCopy(newClient(), file) }
                                     )
                                 }
                             }
@@ -471,84 +409,16 @@ internal fun MailPanel(
         }
     }
 
-    selectedPreview?.let { file ->
-        // Full screen: the underlying file list retains its scroll position.
-        // Only one image is requested at a time, previous requests are cancelled.
-        val photos = remember(filtered) {
-            filtered.filter { !it.isDirectory && MediaFileKinds.isImage(it.name) }
-        }
-        val index = photos.indexOfFirst { it.path == file.path }
-        Dialog(
-            onDismissRequest = ::closePreview,
-            properties = DialogProperties(usePlatformDefaultWidth = false)
-        ) {
-            Column(
-                modifier = Modifier.fillMaxSize().background(Color.Black)
-                    .padding(horizontal = 12.dp, vertical = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        file.name,
-                        modifier = Modifier.weight(1f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = Color.White
-                    )
-                    TextButton(onClick = ::closePreview) { Text("Закрыть") }
-                }
-                Box(
-                    modifier = Modifier.fillMaxWidth().weight(1f),
-                    contentAlignment = Alignment.Center
-                ) {
-                    when {
-                        previewLoading -> CircularProgressIndicator()
-                        previewBitmap != null -> Image(
-                            bitmap = previewBitmap!!,
-                            contentDescription = file.name,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Fit
-                        )
-                        else -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(previewError ?: "Изображение недоступно.", color = Color.White)
-                            Spacer(Modifier.height(12.dp))
-                            TextButton(onClick = { preview(file) }) { Text("Повторить") }
-                        }
-                    }
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    TextButton(
-                        enabled = index > 0,
-                        onClick = { if (index > 0) preview(photos[index - 1]) }
-                    ) { Text("Назад") }
-                    Text(
-                        if (index >= 0) "${index + 1} / ${photos.size}" else "",
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelMedium
-                    )
-                    TextButton(
-                        enabled = index >= 0 && index < photos.lastIndex,
-                        onClick = { if (index in 0 until photos.lastIndex) preview(photos[index + 1]) }
-                    ) { Text("Далее") }
-                    Spacer(Modifier.weight(1f))
-                    if (driveConnected && !copying) {
-                        TextButton(onClick = {
-                            closePreview()
-                            onCopy(newClient(), file.toCloudNode())
-                        }) { Text("В Drive") }
-                    }
-                    TextButton(onClick = {
-                        closePreview()
-                        selectedForDownload = file
-                        savePicker.launch(file.name)
-                    }) { Text("Скачать") }
-                }
+    selectedPhotoId?.let { id ->
+        val photos = remember(filtered) { filtered.filter(MediaFileKinds::isPhoto) }
+        PhotoViewer(photos, id, photoLoader, onClose = { selectedPhotoId = null }) { file ->
+            if (driveConnected && !copying) {
+                TextButton(onClick = {
+                    selectedPhotoId = null
+                    onCopy(newClient(), file)
+                }) { Text("В Drive") }
             }
+            TextButton(onClick = { selectedPhotoId = null; download(file) }) { Text("Скачать") }
         }
     }
 
@@ -608,71 +478,6 @@ private fun MailFileActions(enabled: Boolean, copyEnabled: Boolean, onDownload: 
             DropdownMenuItem(text = { Text("Скачать") }, onClick = { expanded = false; onDownload() })
             DropdownMenuItem(text = { Text("Копировать в Google Drive") },
                 onClick = { expanded = false; onCopy() })
-        }
-    }
-}
-
-@Composable
-private fun MailGridTile(
-    file: DavEntry,
-    loader: MailThumbnailLoader?,
-    enabled: Boolean,
-    copyEnabled: Boolean,
-    onCopy: () -> Unit,
-    onOpen: () -> Unit
-) {
-    val isImage = !file.isDirectory && MediaFileKinds.isImage(file.name)
-    Card(onClick = onOpen, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
-        Column {
-            Box(
-                modifier = Modifier.fillMaxWidth().aspectRatio(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                if (isImage) {
-                    val thumb by produceState<Bitmap?>(
-                        initialValue = null, key1 = file, key2 = loader
-                    ) {
-                        value = try {
-                            loader?.load(file)
-                        } catch (cancel: CancellationException) {
-                            throw cancel
-                        } catch (_: Exception) {
-                            null
-                        }
-                    }
-                    if (thumb != null) {
-                        Image(
-                            bitmap = thumb!!.asImageBitmap(),
-                            contentDescription = file.name,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    } else {
-                        Text("▧", style = MaterialTheme.typography.headlineLarge)
-                    }
-                } else {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(if (file.isDirectory) "📁" else "📄",
-                            style = MaterialTheme.typography.headlineLarge)
-                        Text(if (file.isDirectory) "Папка" else "Файл",
-                            style = MaterialTheme.typography.labelSmall)
-                    }
-                }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = file.name,
-                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp, vertical = 8.dp),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodySmall
-                )
-                if (copyEnabled) {
-                    IconButton(onClick = onCopy, enabled = enabled) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Копировать в Google Drive")
-                    }
-                }
-            }
         }
     }
 }

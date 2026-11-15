@@ -1,6 +1,7 @@
 package com.mediahub.mobile.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -11,10 +12,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -29,15 +36,19 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.mediahub.mobile.domain.CloudNode
 import com.mediahub.mobile.domain.CloudProvider
 import com.mediahub.mobile.drive.DriveAuthorizationRequired
-import com.mediahub.mobile.drive.DriveProvider
+import com.mediahub.mobile.media.MediaFileKinds
+import com.mediahub.mobile.media.PhotoPreviewLoader
+import com.mediahub.mobile.media.readPhotoBytes
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -145,8 +156,20 @@ internal fun DrivePanel(
     var creating by remember { mutableStateOf(false) }
     var directoryDialog by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var gridView by rememberSaveable { mutableStateOf(false) }
+    var selectedPhotoId by remember(drive, folder.id) { mutableStateOf<String?>(null) }
+    val listState = rememberLazyListState()
+    val gridState = rememberLazyGridState()
     val state = rememberFolderContents(drive, folder, refresh, onExpired)
     val scope = rememberCoroutineScope()
+    val photoLoader = remember(drive, refresh) {
+        PhotoPreviewLoader { file, maxBytes -> drive.openRead(file).use { it.readPhotoBytes(maxBytes) } }
+    }
+
+    LaunchedEffect(folder.id, gridView) {
+        listState.scrollToItem(0)
+        gridState.scrollToItem(0)
+    }
 
     fun goBack() {
         if (path.size > 1) {
@@ -154,7 +177,20 @@ internal fun DrivePanel(
             error = null
         }
     }
-    BackHandler(enabled = path.size > 1 && !creating, onBack = ::goBack)
+    BackHandler(enabled = path.size > 1 && !creating && selectedPhotoId == null, onBack = ::goBack)
+
+    fun openNode(node: CloudNode) {
+        if (node.isFolder) {
+            path.add(node)
+            error = null
+        } else if (!state.loading && MediaFileKinds.isPhoto(node)) {
+            selectedPhotoId = node.id
+        }
+    }
+
+    fun loadMore() {
+        scope.launch { state.load(drive, folder, more = true, onExpired) }
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
         Text(if (safMode) "Папка, выбранная через Android" else "Доступ к файлам Media Hub", style = MaterialTheme.typography.labelMedium)
@@ -170,61 +206,71 @@ internal fun DrivePanel(
             }
         }
         if (!mailConnected) Text("Подключите Mail, чтобы копировать файлы между облаками.")
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FilterChip(selected = !gridView, onClick = { gridView = false }, label = { Text("Список") })
+            FilterChip(selected = gridView, onClick = { gridView = true }, label = { Text("Плитка") })
+        }
         if (state.loading || creating) LinearProgressIndicator(Modifier.fillMaxWidth())
         (error ?: state.error ?: driveError)?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            if (state.nodes.isEmpty() && !state.loading && state.error == null && state.nextPage == null) {
-                item { Text("Здесь пока нет файлов с доступом для Media Hub.") }
-            }
-            items(state.nodes, key = { it.id }) { node ->
-                if (node.isFolder) {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                        OutlinedButton(
-                            onClick = { path.add(node); error = null },
-                            enabled = !creating,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text(node.name, modifier = Modifier.fillMaxWidth(),
-                                maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        }
-                        if (mailConnected) TextButton(
-                            onClick = { onCopy(node) },
-                            enabled = !copying && !creating
-                        ) { Text("В Mail") }
-                    }
-                } else {
-                    Card(Modifier.fillMaxWidth()) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(node.name, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                if (!node.canReadBytes) {
-                                    Text("Документ, ярлык или скачивание ограничено", style = MaterialTheme.typography.labelSmall)
-                                }
-                            }
-                            if (node.canReadBytes && mailConnected) {
-                                TextButton(onClick = { onCopy(node) }, enabled = !copying) { Text("В Mail") }
-                            }
-                        }
+        val empty = state.nodes.isEmpty() && !state.loading && state.error == null && state.nextPage == null
+        if (empty) {
+            Text("Здесь пока нет файлов с доступом для Media Hub.", modifier = Modifier.weight(1f))
+        } else if (gridView) {
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(140.dp),
+                state = gridState,
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(state.nodes.size, key = { state.nodes[it].id }) { index ->
+                    val node = state.nodes[index]
+                    val canOpen = !creating && (node.isFolder || !state.loading && MediaFileKinds.isPhoto(node))
+                    val canCopy = !copying && !creating && mailConnected && (node.isFolder || node.canReadBytes)
+                    StorageGridTile(
+                        file = node,
+                        loader = photoLoader,
+                        onOpen = if (canOpen) ({ openNode(node) }) else null,
+                        onCopy = if (canCopy) ({ onCopy(node) }) else null,
+                        copyDescription = "Копировать в Mail"
+                    )
+                }
+                if (state.nextPage != null) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        TextButton(onClick = ::loadMore, enabled = !state.loading) { Text("Показать ещё") }
                     }
                 }
             }
-            if (state.nextPage != null) {
-                item {
-                    TextButton(
-                        onClick = { scope.launch { state.load(drive, folder, more = true, onExpired) } },
-                        enabled = !state.loading
-                    ) { Text("Показать ещё") }
+        } else {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                items(state.nodes, key = { it.id }) { node ->
+                    DriveFileRow(node, creating, mailConnected, copying, { openNode(node) }, { onCopy(node) })
+                }
+                if (state.nextPage != null) {
+                    item { TextButton(onClick = ::loadMore, enabled = !state.loading) { Text("Показать ещё") } }
                 }
             }
         }
         TextButton(onClick = if (safMode) onDisconnectFolder else actions.disconnect, enabled = !copying && !creating) {
             Text(if (safMode) "Отвязать выбранную папку" else "Отключить Google Drive на устройстве")
+        }
+    }
+
+    selectedPhotoId?.let { id ->
+        val photos = remember(state.nodes) { state.nodes.filter(MediaFileKinds::isPhoto) }
+        PhotoViewer(
+            photos, id, photoLoader,
+            onClose = { selectedPhotoId = null },
+            onLoadFailure = { if (it is DriveAuthorizationRequired) onExpired() }
+        ) { file ->
+            if (mailConnected && !copying) TextButton(onClick = {
+                selectedPhotoId = null
+                onCopy(file)
+            }) { Text("В Mail") }
         }
     }
 
@@ -246,6 +292,42 @@ internal fun DrivePanel(
                 } finally {
                     creating = false
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DriveFileRow(
+    node: CloudNode,
+    creating: Boolean,
+    mailConnected: Boolean,
+    copying: Boolean,
+    onOpen: () -> Unit,
+    onCopy: () -> Unit
+) {
+    if (node.isFolder) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(onClick = onOpen, enabled = !creating, modifier = Modifier.weight(1f)) {
+                Text(node.name, modifier = Modifier.fillMaxWidth(), maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+            if (mailConnected) TextButton(onClick = onCopy, enabled = !copying && !creating) { Text("В Mail") }
+        }
+    } else {
+        val modifier = Modifier.fillMaxWidth()
+        val isPhoto = MediaFileKinds.isPhoto(node)
+        Card(if (isPhoto) modifier.clickable(enabled = !creating, role = Role.Button, onClick = onOpen) else modifier) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(node.name, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    if (!node.canReadBytes) {
+                        Text("Документ, ярлык или скачивание ограничено", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                if (node.canReadBytes && mailConnected) TextButton(onClick = onCopy, enabled = !copying) { Text("В Mail") }
             }
         }
     }

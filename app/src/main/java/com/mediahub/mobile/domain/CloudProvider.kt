@@ -1,7 +1,10 @@
 package com.mediahub.mobile.domain
 
+import java.io.ByteArrayOutputStream
 import java.io.Closeable
+import java.io.IOException
 import java.io.InputStream
+import java.io.InterruptedIOException
 
 /** Provider IDs are opaque outside the adapter that issued them. */
 data class CloudNode(
@@ -21,6 +24,20 @@ class CloudRead(
     private val closeResource: Closeable = stream
 ) : Closeable {
     override fun close() = closeResource.close()
+}
+
+/** Check actual bytes even when a remote response has no trustworthy length. */
+internal fun InputStream.readBounded(reportedSize: Long?, maxBytes: Int, overflowMessage: String): ByteArray {
+    if (reportedSize != null && reportedSize > maxBytes) throw IOException(overflowMessage)
+    val result = ByteArrayOutputStream()
+    val buffer = ByteArray(32 * 1024)
+    while (true) {
+        if (Thread.currentThread().isInterrupted) throw InterruptedIOException()
+        val count = read(buffer)
+        if (count < 0) return result.toByteArray()
+        if (count > maxBytes - result.size()) throw IOException(overflowMessage)
+        result.write(buffer, 0, count)
+    }
 }
 
 interface CloudProvider {

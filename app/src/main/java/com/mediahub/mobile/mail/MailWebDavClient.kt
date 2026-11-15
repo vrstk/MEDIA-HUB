@@ -2,6 +2,9 @@ package com.mediahub.mobile.mail
 
 import com.mediahub.mobile.domain.CloudRead
 import com.mediahub.mobile.domain.DestinationExistsException
+import com.mediahub.mobile.domain.readBounded
+import com.mediahub.mobile.media.MAX_PHOTO_PREVIEW_BYTES
+import com.mediahub.mobile.media.readPhotoBytes
 import okhttp3.Credentials
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -11,7 +14,6 @@ import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okio.BufferedSink
-import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -49,7 +51,7 @@ class MailWebDavClient(
         http.newCall(req).execute().use { response ->
             if (response.code != 207 && response.code != 200) fail(response.code)
             val body = response.body ?: throw IOException("Пустой ответ WebDAV.")
-            return readBounded(body.byteStream(), body.contentLength(), 8_000_000,
+            return body.byteStream().readBounded(body.contentLength(), 8_000_000,
                 "Слишком большой XML-ответ WebDAV.").toString(Charsets.UTF_8)
         }
     }
@@ -152,15 +154,12 @@ class MailWebDavClient(
         openRead(path).use { it.stream.copyTo(destination, 64 * 1024) }
     }
 
-    fun previewImage(path: String, maxBytes: Int = 16 * 1024 * 1024): ByteArray {
-        require(maxBytes in 1..(16 * 1024 * 1024))
+    fun previewImage(path: String, maxBytes: Int = MAX_PHOTO_PREVIEW_BYTES): ByteArray {
+        require(maxBytes in 1..MAX_PHOTO_PREVIEW_BYTES)
         var firstFailure: IOException? = null
         for (attempt in 0..1) {
             try {
-                return openRead(path).use { response ->
-                    readBounded(response.stream, response.sizeBytes ?: -1, maxBytes,
-                        "Фотография слишком большая для предпросмотра. Её можно скачать.")
-                }
+                return openRead(path).use { it.readPhotoBytes(maxBytes) }
             } catch (failure: IOException) {
                 // The GET is read-only and starts from byte 0 on every attempt.
                 // Never retry HTTP errors, cancellation or files exceeding the limit.
@@ -175,19 +174,6 @@ class MailWebDavClient(
             }
         }
         throw IOException("Не удалось загрузить изображение.")
-    }
-
-    private fun readBounded(stream: InputStream, reported: Long, maxBytes: Int, error: String): ByteArray {
-        if (reported > maxBytes) throw IOException(error)
-        val result = ByteArrayOutputStream()
-        val buffer = ByteArray(32 * 1024)
-        while (true) {
-            val count = stream.read(buffer)
-            if (count < 0) break
-            if (result.size() + count > maxBytes) throw IOException(error)
-            result.write(buffer, 0, count)
-        }
-        return result.toByteArray()
     }
 
     private fun fail(code: Int): Nothing = throw when (code) {
