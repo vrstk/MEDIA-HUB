@@ -74,11 +74,12 @@ internal fun CloudAlbumsPanel(
     onDriveExpired: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var source by rememberSaveable { mutableIntStateOf(if (mail != null) 0 else 1) }
+    var source by rememberSaveable { mutableIntStateOf(2) }
     val provider = if (source == 0) mail else drive
     var query by rememberSaveable(source) { mutableStateOf("") }
     var filter by rememberSaveable(source) { mutableIntStateOf(0) }
     var photoId by remember { mutableStateOf<String?>(null) }
+    var requestedTrail by remember { mutableStateOf<Pair<Int, List<CloudNode>>?>(null) }
     val context = LocalContext.current
     val bookmarksStore = remember(context) { AlbumBookmarkStore(context) }
     var bookmarks by remember(bookmarksStore) { mutableStateOf(bookmarksStore.load()) }
@@ -95,6 +96,11 @@ internal fun CloudAlbumsPanel(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = source == 2, onClick = {
+                source = 2
+                photoId = null
+                requestedTrail = null
+            }, label = { Text("Все") })
             FilterChip(selected = source == 0, onClick = {
                 source = 0
                 photoId = null
@@ -103,6 +109,30 @@ internal fun CloudAlbumsPanel(
                 source = 1
                 photoId = null
             }, label = { Text("Google Drive") })
+        }
+        if (source == 2) {
+            CombinedCloudAlbumsOverview(
+                mail = mail,
+                drive = drive,
+                mailScope = albumBookmarkScope("mail", mailIdentity.orEmpty()),
+                driveScope = albumBookmarkScope("drive", driveIdentity.orEmpty()),
+                bookmarks = bookmarks,
+                chosenCovers = chosenCovers,
+                onToggleBookmark = { bookmark ->
+                    val updated = toggleAlbumBookmark(bookmarks, bookmark)
+                    bookmarksStore.save(updated)
+                    bookmarks = updated
+                },
+                onOpenAlbum = { index, trail ->
+                    requestedTrail = index to trail
+                    source = index
+                    photoId = null
+                },
+                onOpenMail = onOpenMail,
+                onOpenDrive = onOpenDrive,
+                onDriveExpired = onDriveExpired
+            )
+            return@Column
         }
         if (provider == null) {
             InfoCard("Хранилище не подключено",
@@ -117,6 +147,16 @@ internal fun CloudAlbumsPanel(
 
         // State is intentionally specific to a provider. Switching accounts resets the trail.
         val trail = remember(provider) { mutableStateListOf(provider.root) }
+        LaunchedEffect(provider, requestedTrail) {
+            val pending = requestedTrail
+            if (pending != null && pending.first == source &&
+                pending.second.firstOrNull()?.id == provider.root.id) {
+                trail.clear()
+                trail.addAll(pending.second)
+                requestedTrail = null
+                query = ""
+            }
+        }
         val folder = trail.last()
         var refresh by remember(provider) { mutableIntStateOf(0) }
         val contents = rememberFolderContents(
@@ -314,7 +354,7 @@ internal fun CloudAlbumsPanel(
 }
 
 @Composable
-private fun AlbumBrowserTile(
+internal fun AlbumBrowserTile(
     node: CloudNode,
     provider: CloudProvider,
     loader: PhotoPreviewLoader,
