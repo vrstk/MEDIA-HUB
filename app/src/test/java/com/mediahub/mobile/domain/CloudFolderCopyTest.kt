@@ -115,6 +115,68 @@ class CloudFolderCopyTest {
         assertEquals(3, destination.files.size)
     }
 
+
+    @Test fun reconcileExistingGalleryWithoutReuploadingVerifiedFiles() {
+        val source = MemoryCloud()
+        val original = source.folder("root", "gallery", "Gallery")
+        source.file("gallery", "x1", "1.jpg", byteArrayOf(1, 2))
+        source.file("gallery", "x2", "2.jpg", byteArrayOf(3, 4))
+        source.file("gallery", "x3", "3.jpg", byteArrayOf(5, 6))
+        val destination = MemoryCloud()
+        val existing = destination.folder("root", "old", "Gallery")
+        destination.file("old", "old1", "1.jpg", byteArrayOf(1, 2))
+        destination.file("old", "old2", "2.jpg", byteArrayOf(3, 4))
+        val result = CloudFolderCopy.run(source, original, destination, destination.root,
+            reconcileExisting = true)
+        assertEquals(3, result.copiedFiles)
+        assertEquals(2, result.reusedFiles)
+        assertEquals(1, destination.uploads)
+        assertEquals(0, destination.creates)
+        assertEquals(3, destination.children.getValue(existing.id).size)
+    }
+
+    @Test fun mismatchBlocksUploadWithoutReplacingAnything() {
+        val source = MemoryCloud()
+        val original = source.folder("root", "gallery", "Gallery")
+        source.file("gallery", "one", "1.jpg", byteArrayOf(1))
+        source.file("gallery", "two", "2.jpg", byteArrayOf(2))
+        val destination = MemoryCloud()
+        destination.folder("root", "gallery2", "Gallery")
+        destination.file("gallery2", "wrong", "1.jpg", byteArrayOf(9))
+        assertThrows(IOException::class.java) {
+            CloudFolderCopy.run(source, original, destination, destination.root,
+                reconcileExisting = true)
+        }
+        assertEquals(0, destination.uploads)
+        assertArrayEquals(byteArrayOf(9), destination.files.getValue("wrong"))
+    }
+
+    @Test fun missingReconcileFolderDoesNotCreateIt() {
+        val source = MemoryCloud()
+        val folder = source.folder("root", "gallery", "Gallery")
+        source.file("gallery", "one", "1.jpg", byteArrayOf(1))
+        val destination = MemoryCloud()
+        assertThrows(IOException::class.java) {
+            CloudFolderCopy.run(source, folder, destination, destination.root,
+                reconcileExisting = true)
+        }
+        assertEquals(0, destination.creates)
+        assertEquals(0, destination.uploads)
+    }
+
+    @Test fun wrongDestinationObjectTypeStopsBeforeWrite() {
+        val source = MemoryCloud()
+        val folder = source.folder("root", "gallery", "Gallery")
+        source.file("gallery", "one", "1.jpg", byteArrayOf(1))
+        val destination = MemoryCloud()
+        destination.file("root", "clash", "Gallery", byteArrayOf(1))
+        assertThrows(IOException::class.java) {
+            CloudFolderCopy.run(source, folder, destination, destination.root,
+                reconcileExisting = true)
+        }
+        assertEquals(0, destination.uploads)
+    }
+
     @Test fun rejectsUnreadableFileBeforeAnyWrite() {
         val src = MemoryCloud()
         val folder = src.folder("root", "a", "Models")

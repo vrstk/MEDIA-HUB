@@ -48,9 +48,10 @@ internal sealed interface CopyState {
         override val name: String,
         val progress: CopyProgress? = null,
         val cancelling: Boolean = false,
-        val folderCopy: Boolean = false
+        val folderCopy: Boolean = false,
+        val reconcileExisting: Boolean = false
     ) : CopyState
-    data class Verified(override val name: String, val size: Long, val files: Int = 1, val folders: Int = 0) : CopyState
+    data class Verified(override val name: String, val size: Long, val files: Int = 1, val folders: Int = 0, val reusedFiles: Int = 0) : CopyState
     data class VerificationPending(override val name: String, val message: String) : CopyState
     data class Failed(override val name: String, val message: String) : CopyState
     data class Cancelled(override val name: String) : CopyState
@@ -145,8 +146,9 @@ internal class CloudTransferViewModel : ViewModel() {
 
     fun clearSelection() { _selection.value = null }
 
-    fun startCopy(selection: CopySelection, folder: CloudNode): Boolean {
+    fun startCopy(selection: CopySelection, folder: CloudNode, reconcileExisting: Boolean = false): Boolean {
         if (_selection.value !== selection || _copy.value is CopyState.Running) return false
+        if (reconcileExisting && !selection.file.isFolder) return false
         val name = selection.file.name
         // Journal is committed before anything can be written to the destination.
         val journalEntry = try {
@@ -157,7 +159,7 @@ internal class CloudTransferViewModel : ViewModel() {
         }
         _history.value = journalStore?.restoreForDisplay() ?: _history.value
         _selection.value = null
-        _copy.value = CopyState.Running(name, folderCopy = selection.file.isFolder)
+        _copy.value = CopyState.Running(name, folderCopy = selection.file.isFolder, reconcileExisting = reconcileExisting)
         copiedJob = viewModelScope.launch {
             val execution = coroutineContext
             try {
@@ -176,9 +178,11 @@ internal class CloudTransferViewModel : ViewModel() {
                                         ))
                                     } else current
                                 }
-                            }
+                            },
+                            reconcileExisting = reconcileExisting
                         )
-                        Triple(result.copiedBytes, result.copiedFiles, result.createdFolders)
+                        listOf(result.copiedBytes, result.copiedFiles.toLong(),
+                            result.createdFolders.toLong(), result.reusedFiles.toLong())
                     } else {
                         var lastPhase: CopyPhase? = null
                         var lastUpdate = 0L
@@ -200,11 +204,13 @@ internal class CloudTransferViewModel : ViewModel() {
                             }
                         }
                         )
-                        Triple(bytes, 1, 0)
+                        listOf(bytes, 1L, 0L, 0L)
                     }
                 }
-                _copy.value = CopyState.Verified(name, result.first, result.second, result.third)
-                finishJournal(journalEntry, TransferJournalStatus.VERIFIED, result.second, result.first)
+                _copy.value = CopyState.Verified(name, result[0], result[1].toInt(), result[2].toInt(),
+                    result[3].toInt())
+                finishJournal(journalEntry, TransferJournalStatus.VERIFIED, result[1].toInt(),
+                    result[0], if (reconcileExisting) "Сверено: ${result[1]}, ранее существовали: ${result[3]}, новых: ${result[1] - result[3]}." else "")
             } catch (e: CancellationException) {
                 _copy.value = CopyState.Cancelled(name)
                 finishJournal(journalEntry, TransferJournalStatus.CANCELLED, note = "Отменено. Проверьте папку назначения.")

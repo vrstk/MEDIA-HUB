@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -16,6 +17,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -33,13 +35,14 @@ internal fun CloudCopyDialog(
     selection: CopySelection,
     onDismiss: () -> Unit,
     onExpired: () -> Unit,
-    onCopy: (CloudNode) -> Unit
+    onCopy: (CloudNode, Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val path = remember(selection) { mutableStateListOf(selection.target.root) }
     val folder = path.last()
     val scope = rememberCoroutineScope()
     var refresh by remember { mutableIntStateOf(0) }
+    var reconcile by remember(selection) { mutableStateOf(false) }
     val state = rememberFolderContents(selection.target, folder, refresh, onExpired)
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -77,11 +80,26 @@ internal fun CloudCopyDialog(
                         }
                     }
                 }
-                Text("При совпадении имени копирование остановится.", style = MaterialTheme.typography.bodySmall)
+                if (selection.file.isFolder) {
+                    Row {
+                        Checkbox(checked = reconcile, onCheckedChange = { reconcile = it })
+                        Text(
+                            "Сверить существующую папку и докопировать отсутствующие файлы",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+                Text(
+                    if (reconcile) "Папка с тем же именем должна существовать. Совпадающие файлы " +
+                        "будут прочитаны полностью и сверены по SHA-256. Несовпадение " +
+                        "остановит операцию; замены и удаления не будет."
+                    else "При совпадении имени копирование остановится.",
+                    style = MaterialTheme.typography.bodySmall
+                )
             }
         },
         confirmButton = {
-            TextButton(onClick = { onCopy(folder) }, enabled = !state.loading && state.error == null) {
+            TextButton(onClick = { onCopy(folder, reconcile) }, enabled = !state.loading && state.error == null) {
                 Text("Копировать сюда")
             }
         },
@@ -100,7 +118,7 @@ internal fun CloudCopyTask(state: CopyState?, onCancel: () -> Unit) {
             Text(when {
                 state.cancelling -> "Остановка…"
                 progress?.phase == CopyPhase.VERIFYING -> "Проверка копии"
-                progress != null -> if (state.folderCopy) "Копирование файлов папки" else "Копирование"
+                progress != null -> if (state.reconcileExisting) "Сверка и докопирование папки" else if (state.folderCopy) "Копирование файлов папки" else "Копирование"
                 else -> "Подготовка передачи"
             })
             if (progress == null || progress.total == 0L) {
@@ -119,7 +137,8 @@ internal fun CloudCopyTask(state: CopyState?, onCancel: () -> Unit) {
             state.name,
             (if (state.files == 0 && state.folders > 0) "Папка создана без файлов. "
              else "Сверено файлов: ${state.files}, создано папок: ${state.folders}. " +
-                  "Объём: ${Formatter.formatFileSize(context, state.size)}. ") +
+                  "Объём: ${Formatter.formatFileSize(context, state.size)}. " +
+                  (if (state.reusedFiles > 0) "Уже существовали и совпали: ${state.reusedFiles}. " else "")) +
                   "Синхронизацию Google Drive с сервером проверьте отдельно."
         )
         is CopyState.VerificationPending -> InfoCard(

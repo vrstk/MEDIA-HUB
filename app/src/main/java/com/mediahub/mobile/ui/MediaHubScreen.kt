@@ -242,8 +242,8 @@ internal fun MediaHubScreen(
         }
     }
     selection?.let { currentCopy ->
-        CloudCopyDialog(currentCopy, transfers::clearSelection, transfers::expireDrive) { folder ->
-            if (transfers.startCopy(currentCopy, folder)) selected = Screen.TASKS.ordinal
+        CloudCopyDialog(currentCopy, transfers::clearSelection, transfers::expireDrive) { folder, reconcile ->
+            if (transfers.startCopy(currentCopy, folder, reconcile)) selected = Screen.TASKS.ordinal
         }
     }
 }
