@@ -3,6 +3,8 @@ package com.mediahub.mobile.ui
 import android.graphics.Bitmap
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +27,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -62,6 +67,8 @@ import kotlinx.coroutines.sync.withPermit
 internal fun CloudAlbumsPanel(
     mail: CloudProvider?,
     drive: CloudProvider?,
+    mailIdentity: String?,
+    driveIdentity: String?,
     onOpenMail: () -> Unit,
     onOpenDrive: () -> Unit,
     onDriveExpired: () -> Unit,
@@ -72,6 +79,13 @@ internal fun CloudAlbumsPanel(
     var query by rememberSaveable(source) { mutableStateOf("") }
     var filter by rememberSaveable(source) { mutableIntStateOf(0) }
     var photoId by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val bookmarksStore = remember(context) { AlbumBookmarkStore(context) }
+    var bookmarks by remember(bookmarksStore) { mutableStateOf(bookmarksStore.load()) }
+    val identity = if (source == 0) mailIdentity else driveIdentity
+    val sourceKey = remember(source, identity) {
+        albumBookmarkScope(if (source == 0) "mail" else "drive", identity.orEmpty())
+    }
 
     Column(
         modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp),
@@ -127,6 +141,38 @@ internal fun CloudAlbumsPanel(
         }
         BackHandler(enabled = trail.size > 1 && photoId == null, onBack = ::back)
         LaunchedEffect(folder.id, filter, query) { gridState.scrollToItem(0) }
+        val savedAlbums = remember(bookmarks, sourceKey, provider.root.id) {
+            bookmarks.filter { it.scope == sourceKey && it.trail.firstOrNull()?.id == provider.root.id }
+        }
+
+        if (savedAlbums.isNotEmpty()) {
+            Text("Избранные альбомы", style = MaterialTheme.typography.labelMedium)
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                savedAlbums.forEach { album ->
+                    FilterChip(
+                        selected = folder.id == album.id,
+                        onClick = {
+                            trail.clear()
+                            trail.addAll(album.trail)
+                            photoId = null
+                            query = ""
+                        },
+                        label = {
+                            Text(album.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    )
+                }
+            }
+        } else {
+            Text(
+                "Отмечайте папки звездой, чтобы быстро открывать любимые альбомы.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
 
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (trail.size > 1) {
@@ -193,6 +239,15 @@ internal fun CloudAlbumsPanel(
                     loader = previewLoader,
                     coverCache = covers,
                     semaphore = coverRequests,
+                    saved = node.isFolder && savedAlbums.any { it.id == node.id },
+                    onToggleSaved = if (node.isFolder) ({
+                        val next = toggleAlbumBookmark(
+                            bookmarks,
+                            AlbumBookmark(sourceKey, trail.toList() + node)
+                        )
+                        bookmarksStore.save(next)
+                        bookmarks = next
+                    }) else null,
                     onOpen = {
                         if (node.isFolder) {
                             trail.add(node)
@@ -235,6 +290,8 @@ private fun AlbumBrowserTile(
     loader: PhotoPreviewLoader,
     coverCache: MutableMap<String, CloudNode?>,
     semaphore: Semaphore,
+    saved: Boolean,
+    onToggleSaved: (() -> Unit)?,
     onOpen: () -> Unit
 ) {
     val cover by produceState<Bitmap?>(
@@ -278,13 +335,24 @@ private fun AlbumBrowserTile(
                         style = MaterialTheme.typography.headlineLarge)
                 }
             }
-            Text(
-                text = node.name,
-                modifier = Modifier.padding(10.dp),
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.bodySmall
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = node.name,
+                    modifier = Modifier.weight(1f).padding(10.dp),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                if (onToggleSaved != null) {
+                    TextButton(
+                        modifier = Modifier.semantics {
+                            contentDescription = if (saved) "Убрать альбом из избранного"
+                                else "Добавить альбом в избранное"
+                        },
+                        onClick = onToggleSaved
+                    ) { Text(if (saved) "★" else "☆", style = MaterialTheme.typography.titleLarge) }
+                }
+            }
         }
     }
 }

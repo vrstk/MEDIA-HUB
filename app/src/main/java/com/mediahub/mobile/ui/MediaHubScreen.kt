@@ -172,6 +172,8 @@ internal fun MediaHubScreen(
                         CloudAlbumsPanel(
                             mail = mail,
                             drive = safDrive ?: drive,
+                            mailIdentity = mailAccount?.email,
+                            driveIdentity = safDrive?.treeUri?.toString() ?: drive?.root?.id,
                             onOpenMail = { selected = Screen.MAIL.ordinal },
                             onOpenDrive = { showDrive = true; selected = Screen.FILES.ordinal },
                             onDriveExpired = transfers::expireDrive,
