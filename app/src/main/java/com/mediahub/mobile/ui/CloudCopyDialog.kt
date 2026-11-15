@@ -115,10 +115,17 @@ internal fun CloudCopyTask(state: CopyState?, onCancel: () -> Unit) {
             }
             TextButton(onClick = onCancel, enabled = !state.cancelling) { Text("Отменить") }
         }
-        is CopyState.Verified -> InfoCard(state.name,
-            "Проверено файлов: ${state.files}, создано папок: ${state.folders}. " +
-            "Всего: ${Formatter.formatFileSize(context, state.size)}. " +
-            "Для Google Drive синхронизацию с сервером проверьте отдельно.")
+        is CopyState.Verified -> InfoCard(
+            state.name,
+            (if (state.files == 0 && state.folders > 0) "Папка создана без файлов. "
+             else "Сверено файлов: ${state.files}, создано папок: ${state.folders}. " +
+                  "Объём: ${Formatter.formatFileSize(context, state.size)}. ") +
+                  "Синхронизацию Google Drive с сервером проверьте отдельно."
+        )
+        is CopyState.VerificationPending -> InfoCard(
+            state.name,
+            "Загрузка могла завершиться, проверка не подтверждена. " + state.message
+        )
         is CopyState.Failed -> InfoCard(state.name, state.message)
         is CopyState.Cancelled -> InfoCard(state.name, "Передача остановлена. Проверьте папку назначения перед повтором.")
     }

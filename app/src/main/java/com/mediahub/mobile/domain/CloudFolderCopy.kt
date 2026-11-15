@@ -14,6 +14,14 @@ data class FolderCopyProgress(
 
 data class FolderCopyResult(val copiedFiles: Int, val copiedBytes: Long, val createdFolders: Int)
 
+/** File creation returned successfully, but checksum verification is not yet confirmed. */
+class FolderVerificationPendingException(
+    val verifiedFiles: Int,
+    val totalFiles: Int,
+    val pendingFile: String,
+    cause: Exception
+) : IOException("Последний файл создан, но контрольная проверка не завершилась.", cause)
+
 /**
  * Preflight scans the entire source tree before creating anything. Copying is
  * non-destructive and non-overwriting. On an interrupted transfer, partial
@@ -47,10 +55,12 @@ object CloudFolderCopy {
         var completedBytes = 0L
         var createdFolders = 0
         var activePath = folder.name
+        var activeOperation = "Подготовка"
 
         fun copyRecursively(tree: Entry.Folder, targetParent: CloudNode) {
             checkpoint()
             activePath = tree.node.name
+            activeOperation = "Создание папки"
             val newFolder = target.createFolder(targetParent.id, tree.node.name)
             createdFolders++
             for (child in tree.entries) {
@@ -59,6 +69,7 @@ object CloudFolderCopy {
                 when (child) {
                     is Entry.Folder -> copyRecursively(child, newFolder)
                     is Entry.File -> {
+                        activeOperation = "Копирование и проверка файла"
                         val bytes = CloudFileCopy.run(source, child.node, target, newFolder, checkpoint) { progress ->
                             report(FolderCopyProgress(
                                 currentName = child.node.name,
@@ -87,10 +98,19 @@ object CloudFolderCopy {
         } catch (cancel: CancellationException) {
             throw cancel
         } catch (error: Exception) {
+            if (error is CopyVerificationException) {
+                throw FolderVerificationPendingException(
+                    completedFiles, plan.files, activePath, error
+                )
+            }
+            val why = generateSequence(error as Throwable?) { it.cause }
+                .mapNotNull { it?.message }
+                .filter { it.length in 1..140 && !it.contains("://") }
+                .lastOrNull() ?: "неизвестная причина"
             throw IOException(
-                "Копирование папки остановлено на «$activePath». Проверено файлов: " +
-                    "$completedFiles из ${plan.files}. В папке назначения может " +
-                    "остаться неполная копия. Ничего не удалено.",
+                "$activeOperation «$activePath» прервано: $why. " +
+                    "Подтверждено $completedFiles из ${plan.files} файлов. " +
+                    "Проверьте содержимое назначения; оригиналы не удалены.",
                 error
             )
         }

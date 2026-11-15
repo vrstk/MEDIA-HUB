@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.mediahub.mobile.domain.CloudFileCopy
 import com.mediahub.mobile.domain.CloudFolderCopy
+import com.mediahub.mobile.domain.CopyVerificationException
+import com.mediahub.mobile.domain.FolderVerificationPendingException
 import com.mediahub.mobile.domain.CloudNode
 import com.mediahub.mobile.domain.CloudProvider
 import com.mediahub.mobile.domain.CopyPhase
@@ -48,6 +50,7 @@ internal sealed interface CopyState {
         val folderCopy: Boolean = false
     ) : CopyState
     data class Verified(override val name: String, val size: Long, val files: Int = 1, val folders: Int = 0) : CopyState
+    data class VerificationPending(override val name: String, val message: String) : CopyState
     data class Failed(override val name: String, val message: String) : CopyState
     data class Cancelled(override val name: String) : CopyState
 }
@@ -187,8 +190,22 @@ internal class CloudTransferViewModel : ViewModel() {
                 throw e
             } catch (e: Exception) {
                 if (e is DriveAuthorizationRequired || e.cause is DriveAuthorizationRequired) expireDrive()
-                _copy.value = CopyState.Failed(name,
-                    e.userMessage("Копирование прервалось. Проверьте папку назначения перед повтором."))
+                _copy.value = when (e) {
+                    is FolderVerificationPendingException -> CopyState.VerificationPending(
+                        name,
+                        "Провайдер сообщил о создании последнего файла «${e.pendingFile}», " +
+                            "но проверить его пока не удалось. Подтверждено " +
+                            "${e.verifiedFiles} из ${e.totalFiles}. " +
+                            "Проверьте все файлы в назначении. Не запускайте перенос заново."
+                    )
+                    is CopyVerificationException -> CopyState.VerificationPending(
+                        name,
+                        "Провайдер создал файл, но подтвердить его содержимое " +
+                            "пока не удалось. Проверьте файл в назначении, не копируя повторно."
+                    )
+                    else -> CopyState.Failed(name,
+                        e.userMessage("Передача прервалась. Проверьте папку назначения."))
+                }
             }
         }
         return true

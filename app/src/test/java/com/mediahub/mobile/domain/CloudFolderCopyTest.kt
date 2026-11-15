@@ -15,6 +15,8 @@ class CloudFolderCopyTest {
         val children = mutableMapOf<String, MutableList<CloudNode>>()
         var creates = 0
         var uploads = 0
+        var readbackFailuresRemaining = 0
+        var readbackFailureName: String? = null
         override val root: CloudNode get() = folders.getValue("root")
         fun folder(parent: String, id: String, name: String): CloudNode {
             val node = CloudNode(id, name, true, null)
@@ -37,8 +39,16 @@ class CloudFolderCopyTest {
             creates++
             return folder(parentId, "folder-$creates", name)
         }
-        override fun openRead(file: CloudNode): CloudRead =
-            CloudRead(ByteArrayInputStream(files.getValue(file.id)), files.getValue(file.id).size.toLong())
+        override fun openRead(file: CloudNode): CloudRead {
+            if (readbackFailureName == file.name && readbackFailuresRemaining > 0) {
+                readbackFailuresRemaining--
+                throw IOException("Provider has not made this uploaded object readable yet.")
+            }
+            return CloudRead(
+                ByteArrayInputStream(files.getValue(file.id)),
+                files.getValue(file.id).size.toLong()
+            )
+        }
         override fun uploadNew(parentId: String, file: CloudNode, size: Long, source: InputStream): CloudNode {
             require(children[parentId].orEmpty().none { it.name == file.name }) { "Уже существует" }
             val bytes = source.readBytes()
@@ -65,6 +75,44 @@ class CloudFolderCopyTest {
         assertEquals(listOf(1, 2), completed.sorted())
         assertArrayEquals(byteArrayOf(1, 2, 3), src.files.getValue("photo"))
         assertEquals(2, dst.uploads)
+    }
+
+
+    @Test fun lastFileBecomesReadableAfterDelayedProviderSync() {
+        val source = MemoryCloud()
+        val originals = source.folder("root", "gallery", "Gallery")
+        for (index in 1..15) {
+            source.file("gallery", "original-$index", "image-$index.jpg", byteArrayOf(index.toByte()))
+        }
+        val destination = MemoryCloud().apply {
+            readbackFailureName = "image-15.jpg"
+            readbackFailuresRemaining = 2
+        }
+        val result = CloudFolderCopy.run(source, originals, destination, destination.root)
+        assertEquals(15, result.copiedFiles)
+        assertEquals(15, destination.uploads)
+        assertEquals(0, destination.readbackFailuresRemaining)
+        assertEquals(15, source.files.size)
+    }
+
+    @Test fun failedReadbackNeverReuploadsTheLastObject() {
+        val source = MemoryCloud()
+        val originals = source.folder("root", "gallery", "Gallery")
+        for (index in 1..3) {
+            source.file("gallery", "original-$index", "image-$index.jpg", byteArrayOf(index.toByte()))
+        }
+        val destination = MemoryCloud().apply {
+            readbackFailureName = "image-3.jpg"
+            readbackFailuresRemaining = 3
+        }
+        val pending = assertThrows(FolderVerificationPendingException::class.java) {
+            CloudFolderCopy.run(source, originals, destination, destination.root)
+        }
+        assertEquals(2, pending.verifiedFiles)
+        assertEquals(3, pending.totalFiles)
+        assertEquals("image-3.jpg", pending.pendingFile)
+        assertEquals(3, destination.uploads)
+        assertEquals(3, destination.files.size)
     }
 
     @Test fun rejectsUnreadableFileBeforeAnyWrite() {

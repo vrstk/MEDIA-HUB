@@ -24,6 +24,14 @@ object CloudFileCopy {
         target: CloudProvider,
         folder: CloudNode,
         checkpoint: () -> Unit = {},
+        pauseBeforeReadbackRetry: (Int) -> Unit = { attempt ->
+            try {
+                Thread.sleep(if (attempt == 1) 400L else 1200L)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw java.util.concurrent.CancellationException("Проверка прервана.")
+            }
+        },
         report: (CopyProgress) -> Unit = {}
     ): Long {
         require(!file.isFolder && file.canReadBytes) { "Этот объект нельзя скопировать как файл." }
@@ -50,35 +58,52 @@ object CloudFileCopy {
             Triple(result, measured, expected)
         }
 
+
+        // Upload succeeded as an API operation; do not upload again if the
+        // provider is temporarily unable to reopen its newly created file.
         try {
-            checkpoint()
             val digest = sourceHash.finish()
-            val saved = target.stat(uploaded.id)
-            if (saved.isFolder || saved.name != current.name) {
-                throw IOException("Сервер вернул другой объект.")
-            }
-            if (saved.sizeBytes != null && saved.sizeBytes != expectedSize) {
-                throw IOException("Размер копии не совпадает.")
-            }
-            report(CopyProgress(CopyPhase.VERIFYING, 0, expectedSize))
-            val verified = target.openRead(saved).use { read ->
-                val measured = MeasuredInput(read.stream, expectedSize, checkpoint) {
-                    report(CopyProgress(CopyPhase.VERIFYING, it, expectedSize))
+            for (attempt in 0..2) {
+                checkpoint()
+                if (attempt != 0) {
+                    pauseBeforeReadbackRetry(attempt)
+                    checkpoint()
                 }
-                val buffer = ByteArray(64 * 1024)
-                while (measured.read(buffer) >= 0) {
-                    // MeasuredInput updates SHA-256 and checks the length incrementally.
+                report(CopyProgress(CopyPhase.VERIFYING, 0, expectedSize))
+                try {
+                    val saved = target.stat(uploaded.id)
+                    if (saved.isFolder || saved.name != current.name) {
+                        throw IOException("Провайдер вернул другой объект.")
+                    }
+                    if (saved.sizeBytes != null && saved.sizeBytes != expectedSize) {
+                        throw IOException("Размер копии не совпадает.")
+                    }
+                    val actualHash = target.openRead(saved).use { read ->
+                        val measured = MeasuredInput(read.stream, expectedSize, checkpoint) {
+                            report(CopyProgress(CopyPhase.VERIFYING, it, expectedSize))
+                        }
+                        val buffer = ByteArray(64 * 1024)
+                        while (measured.read(buffer) >= 0) {
+                            // Readback validates size and SHA-256 without changing data.
+                        }
+                        measured.finish()
+                    }
+                    if (!MessageDigest.isEqual(digest, actualHash)) {
+                        throw IOException("Контрольные суммы файлов не совпали.")
+                    }
+                    return expectedSize
+                } catch (cancel: java.util.concurrent.CancellationException) {
+                    throw cancel
+                } catch (error: IOException) {
+                    if (attempt == 2) throw error
+                    // A new metadata lookup and readback only, never a second upload.
                 }
-                measured.finish()
             }
-            if (!MessageDigest.isEqual(digest, verified)) {
-                throw IOException("Контрольные суммы файлов не совпали.")
-            }
-            return expectedSize
-        } catch (e: java.util.concurrent.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            throw CopyVerificationException(e)
+            throw IOException("Проверить копию не удалось.")
+        } catch (cancel: java.util.concurrent.CancellationException) {
+            throw cancel
+        } catch (error: Exception) {
+            throw CopyVerificationException(error)
         }
     }
 
