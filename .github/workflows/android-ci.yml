@@ -49,13 +49,13 @@ jobs:
         run: |
           mkdir -p dist
           cp app/build/outputs/apk/debug/app-debug.apk dist/media-hub-debug.apk
-      - name: Build separately installable Preview APK
+      - name: Build separately installable Catalog Preview APK
         if: github.event_name == 'pull_request'
         run: |
           # A clean rebuild is required: Gradle might otherwise consider
           # assembleDebug UP-TO-DATE despite a changed applicationIdSuffix.
-          ./gradlew --no-daemon -PmediaHubSideBySide=true :app:clean :app:assembleDebug --stacktrace
-          cp app/build/outputs/apk/debug/app-debug.apk dist/media-hub-preview.apk
+          ./gradlew --no-daemon -PmediaHubCatalogPreview=true :app:clean :app:assembleDebug --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk dist/media-hub-catalog-preview.apk
       - name: Verify distinct Android package names
         if: github.event_name == 'pull_request'
         env:
@@ -65,8 +65,8 @@ jobs:
           AAPT="$ANDROID_HOME/build-tools/36.0.0/aapt"
           test -x "$AAPT"
           "$AAPT" dump badging dist/media-hub-debug.apk | grep -F "package: name='com.mediahub.mobile'"
-          "$AAPT" dump badging dist/media-hub-preview.apk | grep -F "package: name='com.mediahub.mobile.preview'"
-          if cmp -s dist/media-hub-debug.apk dist/media-hub-preview.apk; then
+          "$AAPT" dump badging dist/media-hub-catalog-preview.apk | grep -F "package: name='com.mediahub.mobile.preview.catalog'"
+          if cmp -s dist/media-hub-debug.apk dist/media-hub-catalog-preview.apk; then
             echo "ERROR: Preview APK is identical to regular APK."
             exit 1
           fi
@@ -74,8 +74,8 @@ jobs:
         if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: media-hub-preview-apk
-          path: dist/media-hub-preview.apk
+          name: media-hub-catalog-preview-apk
+          path: dist/media-hub-catalog-preview.apk
           if-no-files-found: error
           retention-days: 14
       - name: Upload debug APK

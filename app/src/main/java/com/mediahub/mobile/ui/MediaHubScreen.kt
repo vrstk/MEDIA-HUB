@@ -16,6 +16,7 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import com.mediahub.mobile.R
+import com.mediahub.mobile.catalog.CatalogViewModel
 import com.mediahub.mobile.mail.MailProvider
 import com.mediahub.mobile.mail.MailWebDavClient
 import com.mediahub.mobile.mail.SecureMailAccountStore
@@ -33,7 +34,12 @@ private enum class Screen(val title: String, val symbol: String) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun MediaHubScreen(darkTheme: Boolean, onThemeToggle: () -> Unit, transfers: CloudTransferViewModel) {
+internal fun MediaHubScreen(
+    darkTheme: Boolean,
+    onThemeToggle: () -> Unit,
+    transfers: CloudTransferViewModel,
+    catalog: CatalogViewModel
+) {
     val context = LocalContext.current
     val mailStore = remember(context) { SecureMailAccountStore(context) }
     var mailAccount by remember { mutableStateOf(mailStore.load()) }
@@ -109,6 +115,10 @@ internal fun MediaHubScreen(darkTheme: Boolean, onThemeToggle: () -> Unit, trans
                     )
                 }
             }
+        } else if (current == Screen.LIBRARY) {
+            screenState.SaveableStateProvider("library") {
+                CatalogPanel(catalog, Modifier.padding(padding))
+            }
         } else if (current == Screen.FILES) {
             Column(
                 Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 8.dp),
@@ -142,22 +152,18 @@ internal fun MediaHubScreen(darkTheme: Boolean, onThemeToggle: () -> Unit, trans
             Text(current.title, style = MaterialTheme.typography.headlineMedium)
             when (current) {
                 Screen.HOME -> {
-                    InfoCard("Добро пожаловать", "Медиафайлы и облака в одном приложении. Это первая техническая версия.")
-                    InfoCard("Локальные файлы", "Откройте вкладку «Файлы», чтобы выбрать папку Android и работать с ней без доступа ко всему накопителю.")
-                    Button(onClick = { selected = Screen.FILES.ordinal }, modifier = Modifier.fillMaxWidth()) {
-                        Text("Открыть файловый менеджер")
+                    Button(onClick = { selected = Screen.LIBRARY.ordinal }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Открыть медиатеку")
                     }
+                    Text("Хранилища", style = MaterialTheme.typography.titleMedium)
+                    OutlinedButton(onClick = { showDrive = false; selected = Screen.FILES.ordinal },
+                        modifier = Modifier.fillMaxWidth()) { Text("Файлы на устройстве") }
                     OutlinedButton(onClick = { showDrive = true; selected = Screen.FILES.ordinal },
                         modifier = Modifier.fillMaxWidth()) { Text("Открыть Google Drive") }
                     OutlinedButton(onClick = { selected = Screen.MAIL.ordinal },
                         modifier = Modifier.fillMaxWidth()) { Text("Открыть Облако Mail") }
                 }
-                Screen.LIBRARY -> {
-                    InfoCard("Каталог", "Подготовлен отдельный архивный каталог: 22 739 профилей, 1 187 категорий и тегов. Импорт в приложение пока не реализован.")
-                    InfoCard("Библиотеки", "Модели, личные фотографии и другие коллекции будут разделены. Фотографии из каталога не загружены.")
-                    InfoCard("Умная группировка", "Анализ сходства лиц будет доступен только после включения пользователем. Сейчас он отключён.")
-                }
-                Screen.FILES, Screen.MAIL -> Unit
+                Screen.FILES, Screen.MAIL, Screen.LIBRARY -> Unit
                 Screen.TASKS -> CloudCopyTask(copy, transfers::cancelCopy)
             }
         }

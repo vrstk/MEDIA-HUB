@@ -1,5 +1,6 @@
 # Android / Gradle
 .gradle/
+.kotlin/
 **/build/
 local.properties
 *.iml
@@ -21,3 +22,6 @@ secrets.properties
 *.sqlite-*
 *Project_Pack*.zip
 *Starter_Catalog*.zip
+
+*.db
+*.db-*
