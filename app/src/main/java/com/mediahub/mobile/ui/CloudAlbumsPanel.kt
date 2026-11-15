@@ -53,10 +53,7 @@ import com.mediahub.mobile.media.MediaFileKinds
 import com.mediahub.mobile.media.PhotoPreviewLoader
 import com.mediahub.mobile.media.readPhotoBytes
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runInterruptible
-import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
 /**
@@ -75,6 +72,9 @@ internal fun CloudAlbumsPanel(
     modifier: Modifier = Modifier
 ) {
     var source by rememberSaveable { mutableIntStateOf(2) }
+    var loadCovers by rememberSaveable { mutableStateOf(true) }
+    val mailSession = remember(mail) { mail?.let(::AlbumThumbnailSession) }
+    val driveSession = remember(drive) { drive?.let(::AlbumThumbnailSession) }
     val provider = if (source == 0) mail else drive
     var query by rememberSaveable(source) { mutableStateOf("") }
     var filter by rememberSaveable(source) { mutableIntStateOf(0) }
@@ -110,10 +110,18 @@ internal fun CloudAlbumsPanel(
                 photoId = null
             }, label = { Text("Google Drive") })
         }
+        FilterChip(
+            selected = loadCovers,
+            onClick = { loadCovers = !loadCovers },
+            label = { Text(if (loadCovers) "Обложки включены" else "Обложки отключены") }
+        )
         if (source == 2) {
             CombinedCloudAlbumsOverview(
                 mail = mail,
                 drive = drive,
+                mailSession = mailSession,
+                driveSession = driveSession,
+                loadCovers = loadCovers,
                 mailScope = albumBookmarkScope("mail", mailIdentity.orEmpty()),
                 driveScope = albumBookmarkScope("drive", driveIdentity.orEmpty()),
                 bookmarks = bookmarks,
@@ -165,14 +173,9 @@ internal fun CloudAlbumsPanel(
         )
         val scope = rememberCoroutineScope()
         val gridState = rememberLazyGridState()
-        val previewLoader = remember(provider) {
-            PhotoPreviewLoader { file, maxBytes ->
-                provider.openRead(file).use { it.readPhotoBytes(maxBytes) }
-            }
-        }
-        // Metadata only: never store downloaded photo bytes for every album.
-        val covers = remember(provider, refresh) { mutableMapOf<String, List<CloudNode>>() }
-        val coverRequests = remember(provider) { Semaphore(2) }
+        val session = (if (source == 0) mailSession else driveSession)
+            ?: error("Не найдено подключённое хранилище")
+        val previewLoader = session.loader
 
         fun back() {
             if (trail.size > 1) {
@@ -235,7 +238,7 @@ internal fun CloudAlbumsPanel(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
             )
-            TextButton(onClick = { refresh++ }, enabled = !contents.loading) {
+            TextButton(onClick = { session.invalidateCandidates(); refresh++ }, enabled = !contents.loading) {
                 Text("Обновить")
             }
         }
@@ -294,10 +297,8 @@ internal fun CloudAlbumsPanel(
             items(nodes, key = { it.id }) { node ->
                 AlbumBrowserTile(
                     node = node,
-                    provider = provider,
-                    loader = previewLoader,
-                    coverCache = covers,
-                    semaphore = coverRequests,
+                    session = session,
+                    loadCover = loadCovers,
                     manualCover = chosenCovers.firstOrNull {
                         it.scope == sourceKey && it.folderId == node.id
                     }?.photo,
@@ -356,10 +357,8 @@ internal fun CloudAlbumsPanel(
 @Composable
 internal fun AlbumBrowserTile(
     node: CloudNode,
-    provider: CloudProvider,
-    loader: PhotoPreviewLoader,
-    coverCache: MutableMap<String, List<CloudNode>>,
-    semaphore: Semaphore,
+    session: AlbumThumbnailSession,
+    loadCover: Boolean,
     manualCover: CloudNode?,
     refresh: Int,
     saved: Boolean,
@@ -367,25 +366,24 @@ internal fun AlbumBrowserTile(
     onOpen: () -> Unit
 ) {
     val cover by produceState<Bitmap?>(
-        null, node.id, provider, manualCover, refresh
+        null, node.id, session, manualCover, refresh, loadCover
     ) {
-        value = semaphore.withPermit {
+        if (!loadCover) return@produceState
+        value = session.semaphore.withPermit {
             suspend fun tryThumbnail(file: CloudNode): Bitmap? = try {
-                loader.thumbnail(file)
+                session.loader.thumbnail(file)
             } catch (cancel: CancellationException) {
                 throw cancel
             } catch (_: Exception) {
                 null
             }
 
-            // Manual cover is always attempted first, but stale links do not hide the album.
             val selected = manualCover?.takeIf(MediaFileKinds::isPhoto)?.let { tryThumbnail(it) }
             if (selected != null) return@withPermit selected
             if (!node.isFolder) return@withPermit tryThumbnail(node)
+
             val candidates = try {
-                coverCache[node.id] ?: runInterruptible(Dispatchers.IO) {
-                    autoCoverCandidates(provider.list(node.id).nodes)
-                }.also { coverCache[node.id] = it }
+                session.folderCandidates(node.id)
             } catch (cancel: CancellationException) {
                 throw cancel
             } catch (_: Exception) {

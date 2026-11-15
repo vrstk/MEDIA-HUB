@@ -35,10 +35,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.mediahub.mobile.domain.CloudNode
 import com.mediahub.mobile.domain.CloudProvider
-import com.mediahub.mobile.media.PhotoPreviewLoader
-import com.mediahub.mobile.media.readPhotoBytes
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
 
 /**
  * An overview of root-level folders from connected accounts.
@@ -48,6 +45,9 @@ import kotlinx.coroutines.sync.Semaphore
 internal fun CombinedCloudAlbumsOverview(
     mail: CloudProvider?,
     drive: CloudProvider?,
+    mailSession: AlbumThumbnailSession?,
+    driveSession: AlbumThumbnailSession?,
+    loadCovers: Boolean,
     mailScope: String,
     driveScope: String,
     bookmarks: List<AlbumBookmark>,
@@ -66,24 +66,7 @@ internal fun CombinedCloudAlbumsOverview(
     val scope = rememberCoroutineScope()
     val state = rememberLazyGridState()
     LaunchedEffect(search) { state.scrollToItem(0) }
-    val mailLoader = remember(mail) {
-        mail?.let { provider ->
-            PhotoPreviewLoader { photo, max ->
-                provider.openRead(photo).use { it.readPhotoBytes(max) }
-            }
-        }
-    }
-    val driveLoader = remember(drive) {
-        drive?.let { provider ->
-            PhotoPreviewLoader { photo, max ->
-                provider.openRead(photo).use { it.readPhotoBytes(max) }
-            }
-        }
-    }
-    val mailCache = remember(mail, mailRefresh) { mutableMapOf<String, List<CloudNode>>() }
-    val driveCache = remember(drive, driveRefresh) { mutableMapOf<String, List<CloudNode>>() }
-    val coverSemaphore = remember { Semaphore(2) }
-    val all = remember(mailContents?.nodes, driveContents?.nodes, search) {
+     val all = remember(mailContents?.nodes, driveContents?.nodes, search) {
         mergeRootAlbums(mailContents?.nodes.orEmpty(), driveContents?.nodes.orEmpty(), search)
     }
     val relevantBookmarks = remember(bookmarks, mailScope, driveScope, mail?.root?.id, drive?.root?.id) {
@@ -157,19 +140,17 @@ internal fun CombinedCloudAlbumsOverview(
             items(all, key = { it.key }) { album ->
                 val isMail = album.source == 0
                 val provider = if (isMail) mail else drive
-                val loader = if (isMail) mailLoader else driveLoader
+                val session = if (isMail) mailSession else driveSession
                 val sourceKey = if (isMail) mailScope else driveScope
-                if (provider != null && loader != null) {
+                if (provider != null && session != null) {
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(if (isMail) "Mail" else "Google Drive",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary)
                         AlbumBrowserTile(
                             node = album.node,
-                            provider = provider,
-                            loader = loader,
-                            coverCache = if (isMail) mailCache else driveCache,
-                            semaphore = coverSemaphore,
+                            session = session,
+                            loadCover = loadCovers,
                             manualCover = chosenCovers.firstOrNull {
                                 it.scope == sourceKey && it.folderId == album.node.id
                             }?.photo,
@@ -205,12 +186,12 @@ internal fun CombinedCloudAlbumsOverview(
             }
             if (mailContents?.error != null) {
                 item(span = { GridItemSpan(maxLineSpan) }) {
-                    TextButton(onClick = { mailRefresh++ }) { Text("Повторить Mail") }
+                    TextButton(onClick = { mailSession?.invalidateCandidates(); mailRefresh++ }) { Text("Повторить Mail") }
                 }
             }
             if (driveContents?.error != null) {
                 item(span = { GridItemSpan(maxLineSpan) }) {
-                    TextButton(onClick = { driveRefresh++ }) { Text("Повторить Google Drive") }
+                    TextButton(onClick = { driveSession?.invalidateCandidates(); driveRefresh++ }) { Text("Повторить Google Drive") }
                 }
             }
         }
