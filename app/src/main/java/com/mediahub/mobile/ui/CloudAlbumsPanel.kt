@@ -85,6 +85,12 @@ internal fun CloudAlbumsPanel(
     var photoId by remember { mutableStateOf<String?>(null) }
     var requestedTrail by remember { mutableStateOf<Pair<Int, List<CloudNode>>?>(null) }
     val context = LocalContext.current
+    val viewStore = remember(context) { GalleryViewStore(context) }
+    var viewOptions by remember(viewStore) { mutableStateOf(viewStore.read()) }
+    fun changeView(options: GalleryViewOptions) {
+        viewOptions = options
+        viewStore.save(options)
+    }
     val bookmarksStore = remember(context) { AlbumBookmarkStore(context) }
     var bookmarks by remember(bookmarksStore) { mutableStateOf(bookmarksStore.load()) }
     val coverStore = remember(context) { AlbumCoverStore(context) }
@@ -100,7 +106,8 @@ internal fun CloudAlbumsPanel(
         modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically,
+        Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(selected = source == 2, onClick = {
                 source = 2
@@ -116,11 +123,27 @@ internal fun CloudAlbumsPanel(
                 photoId = null
             }, label = { Text("Google Drive") })
         }
-        FilterChip(
-            selected = loadCovers,
-            onClick = { loadCovers = !loadCovers },
-            label = { Text(if (loadCovers) "Обложки включены" else "Обложки отключены") }
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            FilterChip(
+                selected = viewOptions.compact,
+                onClick = { changeView(viewOptions.copy(compact = !viewOptions.compact)) },
+                label = { Text(if (viewOptions.compact) "Компактно" else "Крупно") }
+            )
+            FilterChip(
+                selected = viewOptions.descending,
+                onClick = { changeView(viewOptions.copy(descending = !viewOptions.descending)) },
+                label = { Text(if (viewOptions.descending) "Я-А" else "А-Я") }
+            )
+            FilterChip(
+                selected = loadCovers,
+                onClick = { loadCovers = !loadCovers },
+                label = { Text(if (loadCovers) "Обложки включены" else "Без обложек") }
+            )
+        }
         if (source == 2) {
             CombinedCloudAlbumsOverview(
                 mail = mail,
@@ -128,6 +151,8 @@ internal fun CloudAlbumsPanel(
                 mailSession = mailSession,
                 driveSession = driveSession,
                 loadCovers = loadCovers,
+                compact = viewOptions.compact,
+                descending = viewOptions.descending,
                 mailScope = albumBookmarkScope("mail", mailIdentity.orEmpty()),
                 driveScope = albumBookmarkScope("drive", driveIdentity.orEmpty()),
                 bookmarks = bookmarks,
@@ -192,21 +217,30 @@ internal fun CloudAlbumsPanel(
         val restoredPosition = remember(provider, sourceKey, folder.id) {
             savedAlbumPosition(navigation, sourceKey, folder.id)
         }
-        val gridState = remember(provider, sourceKey, folder.id) { LazyGridState() }
-        var positionReady by remember(provider, sourceKey, folder.id) { mutableStateOf(false) }
-        LaunchedEffect(provider, folder.id, contents.loading, contents.nodes.size, query, filter) {
+        val gridState = remember(provider, sourceKey, folder.id,
+            viewOptions.compact, viewOptions.descending) { LazyGridState() }
+        var positionReady by remember(provider, sourceKey, folder.id,
+            viewOptions.compact, viewOptions.descending) { mutableStateOf(false) }
+        LaunchedEffect(provider, folder.id, contents.loading, contents.nodes.size, query, filter,
+            viewOptions.compact, viewOptions.descending) {
             if (!positionReady && !contents.loading) {
-                if (contents.nodes.isNotEmpty() && query.isBlank() && filter == 0) {
-                    val target = restoredPosition?.index?.coerceIn(0, contents.nodes.lastIndex) ?: 0
-                    gridState.scrollToItem(target, if (target == restoredPosition?.index)
-                        restoredPosition.offset else 0)
+                if (!viewOptions.compact && !viewOptions.descending &&
+                    contents.nodes.isNotEmpty() && query.isBlank() && filter == 0) {
+                    val count = albumBrowseItems(contents.nodes, "", AlbumContentFilter.ALL).size
+                    if (count > 0) {
+                        val target = restoredPosition?.index?.coerceIn(0, count - 1) ?: 0
+                        gridState.scrollToItem(target, if (target == restoredPosition?.index)
+                            restoredPosition.offset else 0)
+                    }
                 }
                 positionReady = true
             }
         }
         LaunchedEffect(provider, sourceKey, folder.id, gridState,
-            positionReady, query, filter, contents.loading) {
+            positionReady, query, filter, contents.loading,
+            viewOptions.compact, viewOptions.descending) {
             if (!positionReady || contents.loading || query.isNotBlank() || filter != 0 ||
+                viewOptions.compact || viewOptions.descending ||
                 contents.nodes.isEmpty()) return@LaunchedEffect
             snapshotFlow {
                 gridState.firstVisibleItemIndex to gridState.firstVisibleItemScrollOffset
@@ -332,11 +366,12 @@ internal fun CloudAlbumsPanel(
                     label = { Text(title) })
             }
         }
-        val nodes = remember(contents.nodes, query, filter) {
+        val nodes = remember(contents.nodes, query, filter, viewOptions.descending) {
             albumBrowseItems(
                 contents.nodes,
                 query,
-                AlbumContentFilter.entries[filter.coerceIn(0, 2)]
+                AlbumContentFilter.entries[filter.coerceIn(0, 2)],
+                descending = viewOptions.descending
             )
         }
         Text(
@@ -351,7 +386,7 @@ internal fun CloudAlbumsPanel(
             TextButton(onClick = { refresh++ }) { Text("Повторить") }
         }
         LazyVerticalGrid(
-            columns = GridCells.Adaptive(150.dp),
+            columns = GridCells.Adaptive(if (viewOptions.compact) 112.dp else 150.dp),
             state = gridState,
             modifier = Modifier.fillMaxWidth().weight(1f),
             verticalArrangement = Arrangement.spacedBy(8.dp),

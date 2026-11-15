@@ -14,14 +14,22 @@ internal data class CombinedAlbum(val source: Int, val node: CloudNode) {
 internal fun mergeRootAlbums(
     mailNodes: List<CloudNode>,
     driveNodes: List<CloudNode>,
-    query: String
+    query: String,
+    descending: Boolean = false
 ): List<CombinedAlbum> {
     val term = query.trim()
     return (mailNodes.asSequence().filter { it.isFolder }.map { CombinedAlbum(0, it) } +
             driveNodes.asSequence().filter { it.isFolder }.map { CombinedAlbum(1, it) })
         .filter { term.isBlank() || it.node.name.contains(term, ignoreCase = true) }
-        .sortedWith(compareBy<CombinedAlbum> { it.node.name.lowercase(Locale.ROOT) }
-            .thenBy { it.source }
-            .thenBy { it.node.id })
+        .sortedWith { a, b ->
+            val byName = a.node.name.lowercase(Locale.ROOT)
+                .compareTo(b.node.name.lowercase(Locale.ROOT))
+            if (byName != 0) {
+                if (descending) -byName else byName
+            } else {
+                val bySource = a.source.compareTo(b.source)
+                if (bySource != 0) bySource else a.node.id.compareTo(b.node.id)
+            }
+        }
         .toList()
 }

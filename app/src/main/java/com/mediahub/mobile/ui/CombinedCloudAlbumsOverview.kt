@@ -48,6 +48,8 @@ internal fun CombinedCloudAlbumsOverview(
     mailSession: AlbumThumbnailSession?,
     driveSession: AlbumThumbnailSession?,
     loadCovers: Boolean,
+    compact: Boolean,
+    descending: Boolean,
     mailScope: String,
     driveScope: String,
     bookmarks: List<AlbumBookmark>,
@@ -65,9 +67,12 @@ internal fun CombinedCloudAlbumsOverview(
     val driveContents = drive?.let { rememberFolderContents(it, it.root, driveRefresh, onDriveExpired) }
     val scope = rememberCoroutineScope()
     val state = rememberLazyGridState()
-    LaunchedEffect(search) { state.scrollToItem(0) }
-     val all = remember(mailContents?.nodes, driveContents?.nodes, search) {
-        mergeRootAlbums(mailContents?.nodes.orEmpty(), driveContents?.nodes.orEmpty(), search)
+    LaunchedEffect(search, compact, descending) { state.scrollToItem(0) }
+     val all = remember(mailContents?.nodes, driveContents?.nodes, search, descending) {
+        mergeRootAlbums(
+            mailContents?.nodes.orEmpty(), driveContents?.nodes.orEmpty(),
+            search, descending = descending
+        )
     }
     val relevantBookmarks = remember(bookmarks, mailScope, driveScope, mail?.root?.id, drive?.root?.id) {
         bookmarks.filter { bookmark ->
@@ -123,7 +128,7 @@ internal fun CombinedCloudAlbumsOverview(
         mailContents?.error?.let { Text("Mail: $it", color = MaterialTheme.colorScheme.error) }
         driveContents?.error?.let { Text("Drive: $it", color = MaterialTheme.colorScheme.error) }
         LazyVerticalGrid(
-            columns = GridCells.Adaptive(150.dp),
+            columns = GridCells.Adaptive(if (compact) 112.dp else 150.dp),
             state = state,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = 16.dp),
