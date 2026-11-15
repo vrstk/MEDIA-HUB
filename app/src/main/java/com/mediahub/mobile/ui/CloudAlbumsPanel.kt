@@ -18,7 +18,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.FilterChip
@@ -39,6 +39,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -54,6 +55,9 @@ import com.mediahub.mobile.media.PhotoPreviewLoader
 import com.mediahub.mobile.media.readPhotoBytes
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.sync.withPermit
 
 /**
@@ -85,6 +89,8 @@ internal fun CloudAlbumsPanel(
     var bookmarks by remember(bookmarksStore) { mutableStateOf(bookmarksStore.load()) }
     val coverStore = remember(context) { AlbumCoverStore(context) }
     var chosenCovers by remember(coverStore) { mutableStateOf(coverStore.load()) }
+    val navigationStore = remember(context) { AlbumNavigationStore(context) }
+    var navigation by remember(navigationStore) { mutableStateOf(navigationStore.load()) }
     val identity = if (source == 0) mailIdentity else driveIdentity
     val sourceKey = remember(source, identity) {
         albumBookmarkScope(if (source == 0) "mail" else "drive", identity.orEmpty())
@@ -153,14 +159,24 @@ internal fun CloudAlbumsPanel(
             return@Column
         }
 
-        // State is intentionally specific to a provider. Switching accounts resets the trail.
-        val trail = remember(provider) { mutableStateListOf(provider.root) }
+        // Only restore the path belonging to the current account and root document.
+        val trail = remember(provider, sourceKey) {
+            mutableStateListOf<CloudNode>().apply {
+                addAll(restoredAlbumTrail(navigation, sourceKey, provider.root))
+            }
+        }
+        fun persistTrail() {
+            val updated = saveAlbumTrail(navigation, sourceKey, trail.toList())
+            navigationStore.save(updated)
+            navigation = updated
+        }
         LaunchedEffect(provider, requestedTrail) {
             val pending = requestedTrail
             if (pending != null && pending.first == source &&
                 pending.second.firstOrNull()?.id == provider.root.id) {
                 trail.clear()
                 trail.addAll(pending.second)
+                persistTrail()
                 requestedTrail = null
                 query = ""
             }
@@ -172,7 +188,38 @@ internal fun CloudAlbumsPanel(
             if (source == 1) onDriveExpired else ({})
         )
         val scope = rememberCoroutineScope()
-        val gridState = rememberLazyGridState()
+        // A separate grid state per folder restores the last viewed row.
+        val restoredPosition = remember(provider, sourceKey, folder.id) {
+            savedAlbumPosition(navigation, sourceKey, folder.id)
+        }
+        val gridState = remember(provider, sourceKey, folder.id) { LazyGridState() }
+        var positionReady by remember(provider, sourceKey, folder.id) { mutableStateOf(false) }
+        LaunchedEffect(provider, folder.id, contents.loading, contents.nodes.size, query, filter) {
+            if (!positionReady && !contents.loading) {
+                if (contents.nodes.isNotEmpty() && query.isBlank() && filter == 0) {
+                    val target = restoredPosition?.index?.coerceIn(0, contents.nodes.lastIndex) ?: 0
+                    gridState.scrollToItem(target, if (target == restoredPosition?.index)
+                        restoredPosition.offset else 0)
+                }
+                positionReady = true
+            }
+        }
+        LaunchedEffect(provider, sourceKey, folder.id, gridState,
+            positionReady, query, filter, contents.loading) {
+            if (!positionReady || contents.loading || query.isNotBlank() || filter != 0 ||
+                contents.nodes.isEmpty()) return@LaunchedEffect
+            snapshotFlow {
+                gridState.firstVisibleItemIndex to gridState.firstVisibleItemScrollOffset
+            }.distinctUntilChanged().collectLatest { (index, offset) ->
+                delay(450)
+                val updated = saveAlbumPosition(
+                    navigation, sourceKey, provider.root, folder.id, index, offset)
+                if (updated != navigation) {
+                    navigationStore.save(updated)
+                    navigation = updated
+                }
+            }
+        }
         val session = (if (source == 0) mailSession else driveSession)
             ?: error("Не найдено подключённое хранилище")
         val previewLoader = session.loader
@@ -180,12 +227,15 @@ internal fun CloudAlbumsPanel(
         fun back() {
             if (trail.size > 1) {
                 trail.removeAt(trail.lastIndex)
+                persistTrail()
                 photoId = null
                 query = ""
             }
         }
         BackHandler(enabled = trail.size > 1 && photoId == null, onBack = ::back)
-        LaunchedEffect(folder.id, filter, query) { gridState.scrollToItem(0) }
+        LaunchedEffect(query, filter) {
+            if (query.isNotBlank() || filter != 0) gridState.scrollToItem(0)
+        }
         val savedAlbums = remember(bookmarks, sourceKey, provider.root.id) {
             bookmarks.filter { it.scope == sourceKey && it.trail.firstOrNull()?.id == provider.root.id }
         }
@@ -210,6 +260,7 @@ internal fun CloudAlbumsPanel(
                         onClick = {
                             trail.clear()
                             trail.addAll(album.trail)
+                            persistTrail()
                             photoId = null
                             query = ""
                         },
@@ -240,6 +291,23 @@ internal fun CloudAlbumsPanel(
             )
             TextButton(onClick = { session.invalidateCandidates(); refresh++ }, enabled = !contents.loading) {
                 Text("Обновить")
+            }
+        }
+        // Current folder first: long nested paths remain usable without extra screens.
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+            trail.indices.reversed().forEach { level ->
+                TextButton(onClick = {
+                    if (level < trail.lastIndex) {
+                        while (trail.lastIndex > level) trail.removeAt(trail.lastIndex)
+                        persistTrail()
+                        photoId = null
+                        query = ""
+                    }
+                }, enabled = level != trail.lastIndex) {
+                    Text(trail[level].name.ifBlank { "Корень" }, maxLines = 1,
+                        overflow = TextOverflow.Ellipsis)
+                }
             }
         }
         if (trail.size > 1 && selectedFolderCover != null) {
@@ -315,6 +383,7 @@ internal fun CloudAlbumsPanel(
                     onOpen = {
                         if (node.isFolder) {
                             trail.add(node)
+                            persistTrail()
                             photoId = null
                             query = ""
                         } else photoId = node.id
