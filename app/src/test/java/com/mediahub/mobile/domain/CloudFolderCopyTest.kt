@@ -110,7 +110,7 @@ class CloudFolderCopyTest {
         }
         assertEquals(2, pending.verifiedFiles)
         assertEquals(3, pending.totalFiles)
-        assertEquals("image-3.jpg", pending.pendingFile)
+        assertEquals("Gallery/image-3.jpg", pending.pendingFile)
         assertEquals(3, destination.uploads)
         assertEquals(3, destination.files.size)
     }
