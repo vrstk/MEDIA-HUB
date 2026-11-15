@@ -1,5 +1,6 @@
 package com.mediahub.mobile.ui
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.mediahub.mobile.domain.CloudFileCopy
@@ -74,6 +75,16 @@ internal class CloudTransferViewModel : ViewModel() {
     val selection = _selection.asStateFlow()
     private val _copy = MutableStateFlow<CopyState?>(null)
     val copy = _copy.asStateFlow()
+    private var journalStore: TransferJournalStore? = null
+    private val _history = MutableStateFlow<List<TransferJournalEntry>>(emptyList())
+    val history = _history.asStateFlow()
+
+    fun initializeJournal(context: Context) {
+        if (journalStore != null) return
+        val store = TransferJournalStore(context)
+        journalStore = store
+        _history.value = store.restore()
+    }
     private var copiedJob: Job? = null
     private var token: String? = null
     private var invalidToken: String? = null
@@ -137,6 +148,14 @@ internal class CloudTransferViewModel : ViewModel() {
     fun startCopy(selection: CopySelection, folder: CloudNode): Boolean {
         if (_selection.value !== selection || _copy.value is CopyState.Running) return false
         val name = selection.file.name
+        // Journal is committed before anything can be written to the destination.
+        val journalEntry = try {
+            journalStore?.begin(name, selection.site)
+        } catch (e: Exception) {
+            _copy.value = CopyState.Failed(name, "Не удалось сохранить журнал операций. Копирование не запускалось.")
+            return false
+        }
+        _history.value = journalStore?.restoreForDisplay() ?: _history.value
         _selection.value = null
         _copy.value = CopyState.Running(name, folderCopy = selection.file.isFolder)
         copiedJob = viewModelScope.launch {
@@ -185,8 +204,10 @@ internal class CloudTransferViewModel : ViewModel() {
                     }
                 }
                 _copy.value = CopyState.Verified(name, result.first, result.second, result.third)
+                finishJournal(journalEntry, TransferJournalStatus.VERIFIED, result.second, result.first)
             } catch (e: CancellationException) {
                 _copy.value = CopyState.Cancelled(name)
+                finishJournal(journalEntry, TransferJournalStatus.CANCELLED, note = "Отменено. Проверьте папку назначения.")
                 throw e
             } catch (e: Exception) {
                 if (e is DriveAuthorizationRequired || e.cause is DriveAuthorizationRequired) expireDrive()
@@ -206,9 +227,30 @@ internal class CloudTransferViewModel : ViewModel() {
                     else -> CopyState.Failed(name,
                         e.userMessage("Передача прервалась. Проверьте папку назначения."))
                 }
+                val status = if (_copy.value is CopyState.VerificationPending)
+                    TransferJournalStatus.NEEDS_REVIEW else TransferJournalStatus.FAILED
+                finishJournal(journalEntry, status, note = (_copy.value as? CopyState.VerificationPending)?.message
+                    ?: (_copy.value as? CopyState.Failed)?.message.orEmpty())
             }
         }
         return true
+    }
+
+    private fun finishJournal(
+        entry: TransferJournalEntry?,
+        status: TransferJournalStatus,
+        count: Int = 0,
+        bytes: Long = 0,
+        note: String = ""
+    ) {
+        if (entry == null) return
+        try {
+            _history.value = journalStore?.finish(entry.id, status, count, bytes, note)
+                ?: _history.value
+        } catch (_: Exception) {
+            // Current transfer result remains visible; a RUNNING journal record is
+            // conservatively classified as interrupted on the next launch.
+        }
     }
 
     fun cancelCopy() {

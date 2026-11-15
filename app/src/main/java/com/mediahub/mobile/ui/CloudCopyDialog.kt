@@ -130,3 +130,31 @@ internal fun CloudCopyTask(state: CopyState?, onCancel: () -> Unit) {
         is CopyState.Cancelled -> InfoCard(state.name, "Передача остановлена. Проверьте папку назначения перед повтором.")
     }
 }
+
+@Composable
+internal fun TransferHistoryPanel(history: List<TransferJournalEntry>) {
+    Text("История передач", style = MaterialTheme.typography.titleMedium)
+    if (history.isEmpty()) {
+        Text("Передач пока нет. Новые операции будут сохраняться на устройстве.",
+            style = MaterialTheme.typography.bodyMedium)
+        return
+    }
+    val format = remember { java.text.SimpleDateFormat("dd.MM.yyyy HH:mm", java.util.Locale("ru")) }
+    history.forEach { entry ->
+        val status = when (entry.status) {
+            TransferJournalStatus.RUNNING -> "Выполняется"
+            TransferJournalStatus.VERIFIED -> "Файлы проверены"
+            TransferJournalStatus.NEEDS_REVIEW -> "Требуется проверка"
+            TransferJournalStatus.FAILED -> "Ошибка передачи"
+            TransferJournalStatus.CANCELLED -> "Отменено"
+            TransferJournalStatus.INTERRUPTED -> "Прервано после закрытия приложения"
+        }
+        InfoCard(
+            entry.name,
+            "${entry.origin} → ${entry.destination}\n" +
+                format.format(java.util.Date(entry.startedAt)) + " · " + status +
+                (if (entry.fileCount > 0) "\nПроверено файлов: ${entry.fileCount}" else "") +
+                (if (entry.note.isNotBlank()) "\n${entry.note}" else "")
+        )
+    }
+}

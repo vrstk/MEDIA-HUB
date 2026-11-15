@@ -82,6 +82,8 @@ internal fun MediaHubScreen(
     val selection by transfers.selection.collectAsState()
     val copy by transfers.copy.collectAsState()
     val copying = copy is CopyState.Running
+    LaunchedEffect(transfers) { transfers.initializeJournal(context) }
+    val transferHistory by transfers.history.collectAsState()
     val driveActions = rememberDriveActions(transfers)
     val screenState = rememberSaveableStateHolder()
     var showDrive by rememberSaveable { mutableStateOf(false) }
@@ -232,7 +234,10 @@ internal fun MediaHubScreen(
                         modifier = Modifier.fillMaxWidth()) { Text("Открыть Облако Mail") }
                 }
                 Screen.FILES, Screen.MAIL, Screen.LIBRARY -> Unit
-                Screen.TASKS -> CloudCopyTask(copy, transfers::cancelCopy)
+                Screen.TASKS -> {
+                    CloudCopyTask(copy, transfers::cancelCopy)
+                    TransferHistoryPanel(transferHistory)
+                }
             }
         }
     }
