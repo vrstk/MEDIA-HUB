@@ -193,15 +193,14 @@ internal fun MailPanel(
 
     val filtered = remember(entries, search) {
         val query = search.trim()
-        entries.asSequence().filter { it.name.contains(query, ignoreCase = true) }
-            .map(DavEntry::toCloudNode).toList()
+        filterAndSortCloudNodes(entries.map(DavEntry::toCloudNode), query)
     }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Text("Mail", style = MaterialTheme.typography.titleLarge)
+        if (account == null) Text("Mail", style = MaterialTheme.typography.titleLarge)
 
         if (account == null) {
             Column(
@@ -351,7 +350,8 @@ internal fun MailPanel(
                             loader = photoLoader,
                             onOpen = if (busy) null else ({ openFile(file) }),
                             onCopy = if (busy || !driveConnected || copying) null else ({ onCopy(newClient(), file) }),
-                            copyDescription = "Копировать в Google Drive"
+                            copyDescription = "Копировать в Google Drive",
+                            copyLabel = "В Drive"
                         )
                     }
                 }

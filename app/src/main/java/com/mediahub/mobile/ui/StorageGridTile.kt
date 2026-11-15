@@ -11,11 +11,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.Card
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -42,7 +39,8 @@ internal fun StorageGridTile(
     loader: PhotoPreviewLoader,
     onOpen: (() -> Unit)?,
     onCopy: (() -> Unit)?,
-    copyDescription: String
+    copyDescription: String,
+    copyLabel: String
 ) {
     val isPhoto = MediaFileKinds.isPhoto(file)
     val modifier = Modifier.fillMaxWidth()
@@ -80,7 +78,7 @@ internal fun StorageGridTile(
                 style = MaterialTheme.typography.bodySmall
             )
             if (onCopy != null) {
-                IconButton(onClick = onCopy) { Icon(Icons.AutoMirrored.Filled.Send, copyDescription) }
+                TextButton(onClick = onCopy) { Text(copyLabel, maxLines = 1) }
             }
         }
     }

@@ -183,7 +183,7 @@ internal fun MediaHubScreen(
                 Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text("Файлы", style = MaterialTheme.typography.headlineMedium)
+                Text("Файлы", style = MaterialTheme.typography.titleLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(!showDrive, { showDrive = false }, label = { Text("На устройстве") })
                     FilterChip(showDrive, { showDrive = true }, label = { Text("Google Drive") })

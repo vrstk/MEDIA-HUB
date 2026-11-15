@@ -8,6 +8,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -18,7 +22,14 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.FilterChip
@@ -157,6 +168,10 @@ internal fun DrivePanel(
     var directoryDialog by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var gridView by rememberSaveable { mutableStateOf(false) }
+    var search by rememberSaveable(folder.id) { mutableStateOf("") }
+    var searchOpen by rememberSaveable(folder.id) { mutableStateOf(false) }
+    var pathExpanded by remember { mutableStateOf(false) }
+    var toolsExpanded by remember { mutableStateOf(false) }
     var selectedPhotoId by remember(drive, folder.id) { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
     val gridState = rememberLazyGridState()
@@ -166,7 +181,7 @@ internal fun DrivePanel(
         PhotoPreviewLoader { file, maxBytes -> drive.openRead(file).use { it.readPhotoBytes(maxBytes) } }
     }
 
-    LaunchedEffect(folder.id, gridView) {
+    LaunchedEffect(folder.id, gridView, search) {
         listState.scrollToItem(0)
         gridState.scrollToItem(0)
     }
@@ -192,24 +207,89 @@ internal fun DrivePanel(
         scope.launch { state.load(drive, folder, more = true, onExpired) }
     }
 
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        Text(if (safMode) "Папка, выбранная через Android" else "Доступ к файлам Media Hub", style = MaterialTheme.typography.labelMedium)
-        if (safMode) Text("Чтение копии через Android не гарантирует завершение синхронизации с Google.", style = MaterialTheme.typography.bodySmall)
-        Text(path.joinToString(" / ") { it.name }, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (path.size > 1) TextButton(onClick = ::goBack, enabled = !creating) { Text("Назад") }
-            TextButton(onClick = { refresh++; error = null }, enabled = !state.loading && !creating) {
-                Text("Обновить")
+    val visibleNodes = remember(state.nodes, search) { filterAndSortCloudNodes(state.nodes, search) }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f)) {
+                TextButton(
+                    onClick = { pathExpanded = true },
+                    enabled = !creating,
+                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 4.dp)
+                ) {
+                    Text(folder.name, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.titleMedium)
+                }
+                DropdownMenu(expanded = pathExpanded, onDismissRequest = { pathExpanded = false }) {
+                    path.asReversed().forEach { crumb ->
+                        DropdownMenuItem(
+                            text = { Text(crumb.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                            enabled = crumb.id != folder.id && !creating,
+                            onClick = {
+                                while (path.size > 1 && path.last().id != crumb.id) {
+                                    path.removeAt(path.lastIndex)
+                                }
+                                pathExpanded = false
+                                error = null
+                            }
+                        )
+                    }
+                }
             }
-            TextButton(onClick = { directoryDialog = true }, enabled = !creating && !state.loading) {
-                Text("Новая папка")
+            IconButton(onClick = { searchOpen = !searchOpen; if (!searchOpen) search = "" }) {
+                Icon(Icons.Default.Search, contentDescription = "Поиск в папке")
+            }
+            Box {
+                IconButton(onClick = { toolsExpanded = true }) {
+                    Icon(Icons.Default.MoreVert, contentDescription = "Действия с папкой")
+                }
+                DropdownMenu(expanded = toolsExpanded, onDismissRequest = { toolsExpanded = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Обновить") },
+                        enabled = !state.loading && !creating,
+                        onClick = { toolsExpanded = false; refresh++; error = null }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Новая папка") },
+                        enabled = !creating && !state.loading,
+                        onClick = { toolsExpanded = false; directoryDialog = true }
+                    )
+                    DropdownMenuItem(
+                        text = { Text(if (safMode) "Отвязать папку" else "Отключить Google Drive") },
+                        enabled = !copying && !creating,
+                        onClick = {
+                            toolsExpanded = false
+                            if (safMode) onDisconnectFolder() else actions.disconnect()
+                        }
+                    )
+                }
             }
         }
-        if (!mailConnected) Text("Подключите Mail, чтобы копировать файлы между облаками.")
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            if (path.size > 1) TextButton(onClick = ::goBack, enabled = !creating) { Text("Назад") }
+            Text(
+                if (search.isBlank()) state.nodes.size.toString()
+                else "${visibleNodes.size}/${state.nodes.size}",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.weight(1f))
             FilterChip(selected = !gridView, onClick = { gridView = false }, label = { Text("Список") })
             FilterChip(selected = gridView, onClick = { gridView = true }, label = { Text("Плитка") })
         }
+        if (searchOpen) OutlinedTextField(
+            value = search, onValueChange = { search = it }, singleLine = true,
+            modifier = Modifier.fillMaxWidth(), label = { Text("Поиск в текущей папке") }
+        )
+        if (safMode) Text(
+            "Проверка через Android не подтверждает завершение синхронизации с Google.",
+            style = MaterialTheme.typography.labelSmall
+        )
+        if (!mailConnected) Text("Подключите Mail для копирования между облаками.",
+            style = MaterialTheme.typography.bodySmall)
         if (state.loading || creating) LinearProgressIndicator(Modifier.fillMaxWidth())
         (error ?: state.error ?: driveError)?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         val empty = state.nodes.isEmpty() && !state.loading && state.error == null && state.nextPage == null
@@ -223,8 +303,8 @@ internal fun DrivePanel(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(state.nodes.size, key = { state.nodes[it].id }) { index ->
-                    val node = state.nodes[index]
+                items(visibleNodes.size, key = { visibleNodes[it].id }) { index ->
+                    val node = visibleNodes[index]
                     val canOpen = !creating && (node.isFolder || !state.loading && MediaFileKinds.isPhoto(node))
                     val canCopy = !copying && !creating && mailConnected && (node.isFolder || node.canReadBytes)
                     StorageGridTile(
@@ -232,7 +312,8 @@ internal fun DrivePanel(
                         loader = photoLoader,
                         onOpen = if (canOpen) ({ openNode(node) }) else null,
                         onCopy = if (canCopy) ({ onCopy(node) }) else null,
-                        copyDescription = "Копировать в Mail"
+                        copyDescription = "Копировать в Mail",
+                        copyLabel = "В Mail"
                     )
                 }
                 if (state.nextPage != null) {
@@ -247,7 +328,7 @@ internal fun DrivePanel(
                 modifier = Modifier.fillMaxWidth().weight(1f),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                items(state.nodes, key = { it.id }) { node ->
+                items(visibleNodes, key = { it.id }) { node ->
                     DriveFileRow(node, creating, mailConnected, copying, { openNode(node) }, { onCopy(node) })
                 }
                 if (state.nextPage != null) {
@@ -255,13 +336,10 @@ internal fun DrivePanel(
                 }
             }
         }
-        TextButton(onClick = if (safMode) onDisconnectFolder else actions.disconnect, enabled = !copying && !creating) {
-            Text(if (safMode) "Отвязать выбранную папку" else "Отключить Google Drive на устройстве")
-        }
     }
 
     selectedPhotoId?.let { id ->
-        val photos = remember(state.nodes) { state.nodes.filter(MediaFileKinds::isPhoto) }
+        val photos = remember(visibleNodes) { visibleNodes.filter(MediaFileKinds::isPhoto) }
         PhotoViewer(
             photos, id, photoLoader,
             onClose = { selectedPhotoId = null },
