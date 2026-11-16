@@ -55,6 +55,7 @@ internal fun CombinedCloudAlbumsOverview(
     driveScope: String,
     bookmarks: List<AlbumBookmark>,
     chosenCovers: List<AlbumCover>,
+    navigation: List<AlbumNavigationState>,
     onToggleBookmark: (AlbumBookmark) -> Unit,
     onRenameBookmark: (AlbumBookmark, String?) -> Unit,
     onRemoveSelectedBookmarks: (Set<FavoriteSelectionKey>) -> Unit,
@@ -93,6 +94,11 @@ internal fun CombinedCloudAlbumsOverview(
             search, descending = descending
         )
     }
+    val recentlyOpened = remember(navigation, mailScope, mail?.root?.id,
+        driveScope, drive?.root?.id) {
+        recentAlbumShortcuts(navigation, mailScope, mail?.root,
+            driveScope, drive?.root)
+    }
     val allFavorites = remember(bookmarks, mailScope, driveScope, mail?.root?.id, drive?.root?.id) {
         visibleFavoriteAlbums(bookmarks, mailScope, mail?.root?.id,
             driveScope, drive?.root?.id, "")
@@ -124,6 +130,29 @@ internal fun CombinedCloudAlbumsOverview(
             FilterChip(selected = favoritesOnly,
                 onClick = { favoritesOnly = true },
                 label = { Text("Избранное (${allFavorites.size})") })
+        }
+        if (!favoritesOnly && recentlyOpened.isNotEmpty()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+            ) {
+                Text("Продолжить:", style = MaterialTheme.typography.labelSmall)
+                recentlyOpened.forEach { recent ->
+                    FilterChip(
+                        selected = false,
+                        onClick = { onOpenAlbum(recent.source, recent.trail) },
+                        label = {
+                            Text(
+                                (if (recent.source == 0) "Mail · " else "Drive · ") +
+                                    recent.title,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    )
+                }
+            }
         }
         if (favoritesOnly) {
             Row(

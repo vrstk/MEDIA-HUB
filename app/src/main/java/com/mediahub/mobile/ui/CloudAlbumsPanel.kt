@@ -157,6 +157,7 @@ internal fun CloudAlbumsPanel(
                 driveScope = albumBookmarkScope("drive", driveIdentity.orEmpty()),
                 bookmarks = bookmarks,
                 chosenCovers = chosenCovers,
+                navigation = navigation,
                 onToggleBookmark = { bookmark ->
                     val updated = toggleAlbumBookmark(bookmarks, bookmark)
                     bookmarksStore.save(updated)
@@ -371,8 +372,13 @@ internal fun CloudAlbumsPanel(
             value = query,
             onValueChange = { query = it.take(160) },
             singleLine = true,
-            label = { Text("Поиск по названиям в текущей папке") },
-            modifier = Modifier.fillMaxWidth()
+            label = { Text("Поиск в текущей папке") },
+            modifier = Modifier.fillMaxWidth(),
+            trailingIcon = {
+                if (query.isNotEmpty()) {
+                    TextButton(onClick = { query = "" }) { Text("Очистить") }
+                }
+            }
         )
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf("Всё", "Папки", "Фото").forEachIndexed { index, title ->
@@ -397,7 +403,18 @@ internal fun CloudAlbumsPanel(
         if (contents.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         contents.error?.let { err ->
             Text(err, color = MaterialTheme.colorScheme.error)
-            TextButton(onClick = { refresh++ }) { Text("Повторить") }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = { refresh++ }) { Text("Повторить") }
+                if (trail.size > 1) {
+                    TextButton(onClick = {
+                        trail.clear()
+                        trail.add(provider.root)
+                        persistTrail()
+                        photoId = null
+                        query = ""
+                    }) { Text("К корню") }
+                }
+            }
         }
         LazyVerticalGrid(
             columns = GridCells.Adaptive(if (viewOptions.compact) 112.dp else 150.dp),

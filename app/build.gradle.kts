@@ -11,8 +11,8 @@ android {
         applicationId = "com.mediahub.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 31
-        versionName = "0.9.2"
+        versionCode = 32
+        versionName = "0.9.3"
         resValue("string", "app_name", "Media Hub")
     }
     buildTypes {
