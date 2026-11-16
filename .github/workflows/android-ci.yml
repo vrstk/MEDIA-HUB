@@ -31,20 +31,57 @@ jobs:
           test -n "$SDKMANAGER"
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0"
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/wrapper-validation@v4
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Unit tests, lint and debug APK
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          gradle-version: '8.13'
-      # First bootstrap CI generates wrapper at runtime; a tracked wrapper
-      # is added after the first successful Gradle verification.
-      - name: Unit tests
-        run: gradle :app:testDebugUnitTest --stacktrace
-      - name: Debug APK
-        run: gradle :app:assembleDebug --stacktrace
+          name: media-hub-test-results
+          path: |
+            app/build/test-results/testDebugUnitTest/*.xml
+            app/build/reports/lint-results-debug.xml
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Preserve regular debug APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/media-hub-debug.apk
+      - name: Build separately installable Catalog Preview APK
+        if: github.event_name == 'pull_request'
+        run: |
+          # A clean rebuild is required: Gradle might otherwise consider
+          # assembleDebug UP-TO-DATE despite a changed applicationIdSuffix.
+          ./gradlew --no-daemon -PmediaHubCatalogPreview=true :app:clean :app:assembleDebug --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk dist/media-hub-catalog-preview.apk
+      - name: Verify distinct Android package names
+        if: github.event_name == 'pull_request'
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
+        run: |
+          set -euo pipefail
+          AAPT="$ANDROID_HOME/build-tools/36.0.0/aapt"
+          test -x "$AAPT"
+          "$AAPT" dump badging dist/media-hub-debug.apk | grep -F "package: name='com.mediahub.mobile'"
+          "$AAPT" dump badging dist/media-hub-catalog-preview.apk | grep -F "package: name='com.mediahub.mobile.preview.catalog'"
+          if cmp -s dist/media-hub-debug.apk dist/media-hub-catalog-preview.apk; then
+            echo "ERROR: Preview APK is identical to regular APK."
+            exit 1
+          fi
+      - name: Upload Preview APK
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: media-hub-catalog-preview-apk
+          path: dist/media-hub-catalog-preview.apk
+          if-no-files-found: error
+          retention-days: 14
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: media-hub-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: dist/media-hub-debug.apk
           if-no-files-found: error
           retention-days: 14

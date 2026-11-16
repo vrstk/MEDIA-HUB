@@ -1,60 +1,64 @@
 package com.mediahub.mobile.mail
 
+import com.mediahub.mobile.domain.CloudRead
+import com.mediahub.mobile.domain.DestinationExistsException
+import com.mediahub.mobile.domain.readBounded
+import com.mediahub.mobile.media.MAX_PHOTO_PREVIEW_BYTES
+import com.mediahub.mobile.media.readPhotoBytes
 import okhttp3.Credentials
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okio.BufferedSink
-import java.io.InputStream
-import java.io.ByteArrayOutputStream
-import java.io.OutputStream
 import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
-/**
- * Real Mail WebDAV implementation: HTTPS only, external application password.
- * No credentials are logged. Each client is per-account and never stored globally.
- */
 class MailWebDavClient(
     email: String,
     appPassword: String,
-    private val http: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(90, TimeUnit.SECONDS)
-        .writeTimeout(90, TimeUnit.SECONDS)
-        .followRedirects(false)
-        .build()
+    private val http: OkHttpClient = client,
+    private val endpoint: HttpUrl = DavPath.BASE_URL.toHttpUrl()
 ) {
     private val auth = Credentials.basic(email, appPassword, Charsets.UTF_8)
 
-    private fun request(method: String, path: String, body: RequestBody? = null): Request.Builder {
-        val validPath = DavPath.normalize(path, method == "PROPFIND" || method == "MKCOL")
-        return Request.Builder()
-            .url(DavPath.BASE_URL + validPath)
-            .header("Authorization", auth)
-            .header("Accept-Encoding", "identity")
-    }
+    private fun address(path: String, directory: Boolean): String =
+        endpoint.toString().trimEnd('/') + DavPath.normalize(path, directory)
 
-    fun list(path: String = "/"): List<DavEntry> {
-        val normalized = DavPath.normalize(path)
-        val xml = """<?xml version="1.0" encoding="UTF-8"?>
-            <d:propfind xmlns:d="DAV:"><d:allprop/></d:propfind>"""
-        val req = request("PROPFIND", normalized)
-            .header("Depth", "1")
-            .method("PROPFIND", xml.toRequestBody("application/xml; charset=utf-8".toMediaTypeOrNull()))
+    private fun request(path: String, directory: Boolean = false) = Request.Builder()
+        .url(address(path, directory))
+        .header("Authorization", auth)
+        .header("Accept-Encoding", "identity")
+
+    fun list(path: String = "/"): List<DavEntry> =
+        DavXmlParser.parse(propfind(path, directory = true, depth = "1"), path)
+
+    fun stat(path: String): DavEntry =
+        DavXmlParser.parseStat(propfind(path, path.endsWith('/'), "0"), path)
+            ?: throw IOException("WebDAV не вернул сведения об объекте.")
+
+    private fun propfind(path: String, directory: Boolean, depth: String): String {
+        val req = request(path, directory)
+            .header("Depth", depth)
+            .method("PROPFIND", PROPERTIES.toRequestBody("application/xml; charset=utf-8".toMediaTypeOrNull()))
             .build()
         http.newCall(req).execute().use { response ->
             if (response.code != 207 && response.code != 200) fail(response.code)
-            val data = response.body?.string() ?: throw IOException("Пустой ответ WebDAV.")
-            return DavXmlParser.parse(data, normalized)
+            val body = response.body ?: throw IOException("Пустой ответ WebDAV.")
+            return body.byteStream().readBounded(body.contentLength(), 8_000_000,
+                "Слишком большой XML-ответ WebDAV.").toString(Charsets.UTF_8)
         }
     }
 
     fun createFolder(parent: String, name: String) {
         val path = DavPath.child(parent, name, true)
-        val req = request("MKCOL", path)
+        val req = request(path, true)
             .method("MKCOL", ByteArray(0).toRequestBody(null))
             .build()
         http.newCall(req).execute().use { response ->
@@ -62,75 +66,138 @@ class MailWebDavClient(
         }
     }
 
-    fun upload(
-        parent: String,
-        name: String,
+    fun upload(parent: String, name: String, size: Long?, mimeType: String?, source: () -> InputStream) {
+        val path = DavPath.child(parent, name, false)
+        putNew(path, size, mimeType, allowExistingServerSuccessCodes = true, source)
+    }
+
+    /** Stage a copy under a unique name, then publish it with WebDAV's no-overwrite MOVE. */
+    fun uploadForCopy(parent: String, name: String, size: Long, mimeType: String?, source: InputStream): String {
+        val destination = DavPath.child(parent, name, false)
+        try {
+            stat(destination)
+            throw DestinationExistsException()
+        } catch (_: DavNotFoundException) {
+            // The MOVE condition also covers a new object appearing after this check.
+        }
+        val temporary = DavPath.child(parent, "mediahub-${UUID.randomUUID()}.upload", false)
+        putNew(temporary, size, mimeType, allowExistingServerSuccessCodes = false) { source }
+        if (Thread.currentThread().isInterrupted) {
+            throw java.util.concurrent.CancellationException("Копирование остановлено.")
+        }
+        val move = request(temporary)
+            .header("Destination", address(destination, false))
+            .header("Overwrite", "F")
+            .method("MOVE", null)
+            .build()
+        http.newCall(move).execute().use { response ->
+            when (response.code) {
+                201 -> return destination
+                412 -> {
+                    // Only the object created by this operation is cleaned up.
+                    val removed = runCatching { deleteTemporary(temporary) }.getOrDefault(false)
+                    if (!removed) throw IOException(
+                        "Имя занято. В папке назначения мог остаться временный файл Media Hub."
+                    )
+                    throw DestinationExistsException()
+                }
+                204 -> throw IOException("WebDAV сообщил о замене цели. Проверьте папку назначения.")
+                else -> throw IOException(
+                    "WebDAV не завершил запись (HTTP ${response.code}). Проверьте папку назначения."
+                )
+            }
+        }
+    }
+
+    private fun deleteTemporary(path: String): Boolean =
+        http.newCall(request(path).delete().build()).execute().use { it.isSuccessful || it.code == 404 }
+
+    private fun putNew(
+        path: String,
         size: Long?,
         mimeType: String?,
+        allowExistingServerSuccessCodes: Boolean,
         source: () -> InputStream
     ) {
-        val path = DavPath.child(parent, name, false)
-        // Conditional PUT avoids silently replacing an existing remote file.
         val body = object : RequestBody() {
             override fun contentType() = mimeType?.toMediaTypeOrNull()
                 ?: "application/octet-stream".toMediaTypeOrNull()
-            override fun contentLength(): Long = size?.takeIf { it >= 0 } ?: -1L
+            override fun contentLength() = size ?: -1L
+            override fun isOneShot() = true
             override fun writeTo(sink: BufferedSink) {
-                source().use { input -> sink.outputStream().let { input.copyTo(it, 64 * 1024) } }
+                source().use { it.copyTo(sink.outputStream(), 64 * 1024) }
             }
         }
-        val req = request("PUT", path)
-            .header("If-None-Match", "*")
-            .put(body)
-            .build()
+        val req = request(path).header("If-None-Match", "*").put(body).build()
         http.newCall(req).execute().use { response ->
-            if (response.code !in listOf(200, 201, 204)) fail(response.code)
+            when (response.code) {
+                201 -> Unit
+                200, 204 -> if (!allowExistingServerSuccessCodes) fail(response.code)
+                else -> fail(response.code)
+            }
+        }
+    }
+
+    fun openRead(path: String): CloudRead {
+        val response = http.newCall(request(path).get().build()).execute()
+        try {
+            if (response.code != 200) fail(response.code)
+            val body = response.body ?: throw IOException("Пустой ответ WebDAV.")
+            return CloudRead(body.byteStream(), body.contentLength().takeIf { it >= 0 }, response)
+        } catch (e: Exception) {
+            response.close()
+            throw e
         }
     }
 
     fun download(path: String, destination: OutputStream) {
-        val req = request("GET", DavPath.normalize(path, false)).get().build()
-        http.newCall(req).execute().use { response ->
-            if (response.code != 200) fail(response.code)
-            (response.body ?: throw IOException("Пустой ответ WebDAV."))
-                .byteStream().use { input -> input.copyTo(destination, 64 * 1024) }
-        }
+        openRead(path).use { it.stream.copyTo(destination, 64 * 1024) }
     }
 
-    /**
-     * A preview is intentionally opt-in and bounded. Never download an entire
-     * photo collection to display the file list. This only fetches one tapped image.
-     */
-    fun previewImage(path: String, maxBytes: Int = 16 * 1024 * 1024): ByteArray {
-        require(maxBytes in 1..(16 * 1024 * 1024))
-        val req = request("GET", DavPath.normalize(path, false)).get().build()
-        http.newCall(req).execute().use { response ->
-            if (response.code != 200) fail(response.code)
-            val body = response.body ?: throw IOException("Пустой ответ WebDAV.")
-            val reported = body.contentLength()
-            if (reported > maxBytes) throw IOException("Фотография слишком большая для предпросмотра. Её можно скачать.")
-            val result = ByteArrayOutputStream()
-            val buffer = ByteArray(32 * 1024)
-            body.byteStream().use { stream ->
-                while (true) {
-                    val count = stream.read(buffer)
-                    if (count < 0) break
-                    if (result.size() + count > maxBytes) {
-                        throw IOException("Фотография слишком большая для предпросмотра. Её можно скачать.")
-                    }
-                    result.write(buffer, 0, count)
+    fun previewImage(path: String, maxBytes: Int = MAX_PHOTO_PREVIEW_BYTES): ByteArray {
+        require(maxBytes in 1..MAX_PHOTO_PREVIEW_BYTES)
+        var firstFailure: IOException? = null
+        for (attempt in 0..1) {
+            try {
+                return openRead(path).use { it.readPhotoBytes(maxBytes) }
+            } catch (failure: IOException) {
+                // The GET is read-only and starts from byte 0 on every attempt.
+                // Never retry HTTP errors, cancellation or files exceeding the limit.
+                if (attempt == 1 || Thread.currentThread().isInterrupted ||
+                    !PreviewRetryPolicy.retryable(failure)
+                ) {
+                    firstFailure?.let { failure.addSuppressed(it) }
+                    throw failure
                 }
+                firstFailure = failure
+                // Do not use the failed response/stream for the next attempt.
             }
-            return result.toByteArray()
         }
+        throw IOException("Не удалось загрузить изображение.")
     }
 
-    private fun fail(code: Int): Nothing = throw IOException(when (code) {
-        401 -> "Неверная почта или пароль для внешнего приложения."
-        403 -> "У сервера нет разрешения на эту операцию (403)."
-        404 -> "Папка или файл не найдены (404)."
-        405, 409, 412 -> "Конфликт: объект уже существует или операция запрещена ($code)."
-        413, 507 -> "Недостаточно места или превышен лимит ($code)."
-        else -> "Ошибка WebDAV: HTTP $code."
-    })
+    private fun fail(code: Int): Nothing = throw when (code) {
+        401 -> IOException("Неверная почта или пароль для внешнего приложения.")
+        403 -> IOException("Операция запрещена сервером WebDAV (403).")
+        404 -> DavNotFoundException()
+        412 -> DestinationExistsException()
+        405, 409 -> IOException("Конфликт: объект уже существует или операция запрещена ($code).")
+        413, 507 -> IOException("Недостаточно места или превышен лимит ($code).")
+        else -> IOException("Ошибка WebDAV: HTTP $code.")
+    }
+
+    private class DavNotFoundException : IOException("Папка или файл не найдены (404).")
+
+    private companion object {
+        const val PROPERTIES = """<?xml version="1.0" encoding="UTF-8"?>
+            <d:propfind xmlns:d="DAV:"><d:allprop/></d:propfind>"""
+        val client = OkHttpClient.Builder()
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(90, TimeUnit.SECONDS)
+            .writeTimeout(90, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(false)
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .build()
+    }
 }

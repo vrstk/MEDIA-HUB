@@ -1,0 +1,179 @@
+package com.mediahub.mobile.ui
+
+import android.text.format.Formatter
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.mediahub.mobile.domain.CloudNode
+import com.mediahub.mobile.domain.CopyPhase
+import kotlinx.coroutines.launch
+
+@Composable
+internal fun CloudCopyDialog(
+    selection: CopySelection,
+    onDismiss: () -> Unit,
+    onExpired: () -> Unit,
+    onCopy: (CloudNode, Boolean) -> Unit
+) {
+    val context = LocalContext.current
+    val path = remember(selection) { mutableStateListOf(selection.target.root) }
+    val folder = path.last()
+    val scope = rememberCoroutineScope()
+    var refresh by remember { mutableIntStateOf(0) }
+    var reconcile by remember(selection) { mutableStateOf(false) }
+    val state = rememberFolderContents(selection.target, folder, refresh, onExpired)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Куда скопировать?") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("${selection.site.label} → ${selection.site.other.label}")
+                Text(selection.file.name, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (selection.file.isFolder) Text("Будут скопированы все вложенные папки и файлы. Исходники останутся. При ошибке неполную копию нужно проверить вручную.", style = MaterialTheme.typography.bodySmall)
+                selection.file.sizeBytes?.let { Text(Formatter.formatFileSize(context, it)) }
+                Text(path.joinToString(" / ") { it.name }, style = MaterialTheme.typography.titleSmall,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Row {
+                    if (path.size > 1) {
+                        TextButton(onClick = { path.removeAt(path.lastIndex) }) { Text("Назад") }
+                    }
+                    if (state.error != null) {
+                        TextButton(onClick = { refresh++ }) { Text("Повторить") }
+                    }
+                }
+                state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                LazyColumn(Modifier.heightIn(max = 184.dp)) {
+                    items(state.nodes.filter { it.isFolder }, key = { it.id }) { child ->
+                        TextButton(onClick = { path.add(child) }, modifier = Modifier.fillMaxWidth()) {
+                            Text(child.name, modifier = Modifier.fillMaxWidth(), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                    if (state.nextPage != null) {
+                        item {
+                            TextButton(
+                                onClick = { scope.launch { state.load(selection.target, folder, more = true, onExpired) } },
+                                enabled = !state.loading
+                            ) { Text("Показать ещё") }
+                        }
+                    }
+                }
+                if (selection.file.isFolder) {
+                    Row {
+                        Checkbox(checked = reconcile, onCheckedChange = { reconcile = it })
+                        Text(
+                            "Сверить существующую папку и докопировать отсутствующие файлы",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+                Text(
+                    if (reconcile) "Папка с тем же именем должна существовать. Совпадающие файлы " +
+                        "будут прочитаны полностью и сверены по SHA-256. Несовпадение " +
+                        "остановит операцию; замены и удаления не будет."
+                    else "При совпадении имени копирование остановится.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onCopy(folder, reconcile) }, enabled = !state.loading && state.error == null) {
+                Text("Копировать сюда")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
+    )
+}
+
+@Composable
+internal fun CloudCopyTask(state: CopyState?, onCancel: () -> Unit) {
+    val context = LocalContext.current
+    when (state) {
+        null -> InfoCard("Передачи", "Выберите файл в Mail или Google Drive, чтобы начать копирование.")
+        is CopyState.Running -> {
+            val progress = state.progress
+            Text(state.name, style = MaterialTheme.typography.titleMedium)
+            Text(when {
+                state.cancelling -> "Остановка…"
+                progress?.phase == CopyPhase.VERIFYING -> "Проверка копии"
+                progress != null -> if (state.reconcileExisting) "Сверка и докопирование папки" else if (state.folderCopy) "Копирование файлов папки" else "Копирование"
+                else -> "Подготовка передачи"
+            })
+            if (progress == null || progress.total == 0L) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            } else {
+                LinearProgressIndicator(
+                    progress = { (progress.done.toDouble() / progress.total).toFloat().coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (state.folderCopy) Text("${progress.done} из ${progress.total} файлов")
+                else Text("${Formatter.formatFileSize(context, progress.done)} из ${Formatter.formatFileSize(context, progress.total)}")
+            }
+            TextButton(onClick = onCancel, enabled = !state.cancelling) { Text("Отменить") }
+        }
+        is CopyState.Verified -> InfoCard(
+            state.name,
+            (if (state.files == 0 && state.folders > 0) "Папка создана без файлов. "
+             else "Сверено файлов: ${state.files}, создано папок: ${state.folders}. " +
+                  "Объём: ${Formatter.formatFileSize(context, state.size)}. " +
+                  (if (state.reusedFiles > 0) "Уже существовали и совпали: ${state.reusedFiles}. " else "")) +
+                  "Синхронизацию Google Drive с сервером проверьте отдельно."
+        )
+        is CopyState.VerificationPending -> InfoCard(
+            state.name,
+            "Загрузка могла завершиться, проверка не подтверждена. " + state.message
+        )
+        is CopyState.Failed -> InfoCard(state.name, state.message)
+        is CopyState.Cancelled -> InfoCard(state.name, "Передача остановлена. Проверьте папку назначения перед повтором.")
+    }
+}
+
+@Composable
+internal fun TransferHistoryPanel(history: List<TransferJournalEntry>) {
+    Text("История передач", style = MaterialTheme.typography.titleMedium)
+    if (history.isEmpty()) {
+        Text("Передач пока нет. Новые операции будут сохраняться на устройстве.",
+            style = MaterialTheme.typography.bodyMedium)
+        return
+    }
+    val format = remember { java.text.SimpleDateFormat("dd.MM.yyyy HH:mm", java.util.Locale("ru")) }
+    history.forEach { entry ->
+        val status = when (entry.status) {
+            TransferJournalStatus.RUNNING -> "Выполняется"
+            TransferJournalStatus.VERIFIED -> "Файлы проверены"
+            TransferJournalStatus.NEEDS_REVIEW -> "Требуется проверка"
+            TransferJournalStatus.FAILED -> "Ошибка передачи"
+            TransferJournalStatus.CANCELLED -> "Отменено"
+            TransferJournalStatus.INTERRUPTED -> "Прервано после закрытия приложения"
+        }
+        InfoCard(
+            entry.name,
+            "${entry.origin} → ${entry.destination}\n" +
+                format.format(java.util.Date(entry.startedAt)) + " · " + status +
+                (if (entry.fileCount > 0) "\nПроверено файлов: ${entry.fileCount}" else "") +
+                (if (entry.note.isNotBlank()) "\n${entry.note}" else "")
+        )
+    }
+}
