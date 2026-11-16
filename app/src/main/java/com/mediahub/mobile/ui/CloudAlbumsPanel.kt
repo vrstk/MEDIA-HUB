@@ -169,6 +169,13 @@ internal fun CloudAlbumsPanel(
                     bookmarksStore.save(updated)
                     bookmarks = updated
                 },
+                onRemoveSelectedBookmarks = { selected ->
+                    val updated = removeSelectedFavorites(bookmarks, selected)
+                    if (updated != bookmarks) {
+                        bookmarksStore.save(updated)
+                        bookmarks = updated
+                    }
+                },
                 onOpenAlbum = { index, trail ->
                     requestedTrail = index to trail
                     source = index

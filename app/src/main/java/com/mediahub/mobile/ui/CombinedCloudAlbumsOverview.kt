@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -57,6 +58,7 @@ internal fun CombinedCloudAlbumsOverview(
     chosenCovers: List<AlbumCover>,
     onToggleBookmark: (AlbumBookmark) -> Unit,
     onRenameBookmark: (AlbumBookmark, String?) -> Unit,
+    onRemoveSelectedBookmarks: (Set<FavoriteSelectionKey>) -> Unit,
     onOpenAlbum: (Int, List<CloudNode>) -> Unit,
     onOpenMail: () -> Unit,
     onOpenDrive: () -> Unit,
@@ -66,6 +68,14 @@ internal fun CombinedCloudAlbumsOverview(
     var favoritesOnly by rememberSaveable { mutableStateOf(false) }
     var editing by remember { mutableStateOf<AlbumBookmark?>(null) }
     var editedName by rememberSaveable { mutableStateOf("") }
+    var selectionMode by remember(favoritesOnly, mailScope, driveScope,
+        mail?.root?.id, drive?.root?.id, search) { mutableStateOf(false) }
+    var selectedKeys by remember(favoritesOnly, mailScope, driveScope,
+        mail?.root?.id, drive?.root?.id, search) {
+        mutableStateOf<Set<FavoriteSelectionKey>>(emptySet())
+    }
+    var confirmBulkRemoval by remember(favoritesOnly, mailScope, driveScope,
+        mail?.root?.id, drive?.root?.id, search) { mutableStateOf(false) }
     var mailRefresh by remember { mutableIntStateOf(0) }
     var driveRefresh by remember { mutableIntStateOf(0) }
     val mailContents = mail?.let { rememberFolderContents(it, it.root, mailRefresh, {}) }
@@ -89,6 +99,14 @@ internal fun CombinedCloudAlbumsOverview(
             driveScope, drive?.root?.id, search, descending)
     }
     val relevantBookmarks = remember(allFavorites) { allFavorites.map { it.bookmark } }
+    // Never act on hidden bookmarks or on entries from disconnected accounts.
+    val visibleKeys = remember(favorites) {
+        favorites.map { favoriteSelectionKey(it.bookmark) }.toSet()
+    }
+    val selectedVisible = selectedKeys.intersect(visibleKeys)
+    fun toggleSelection(key: FavoriteSelectionKey) {
+        selectedKeys = if (key in selectedKeys) selectedKeys - key else selectedKeys + key
+    }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp),
@@ -119,6 +137,38 @@ internal fun CombinedCloudAlbumsOverview(
                                 entry.bookmark.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         })
                 }
+            }
+        }
+        if (favoritesOnly) {
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                TextButton(onClick = {
+                    selectionMode = !selectionMode
+                    selectedKeys = emptySet()
+                    confirmBulkRemoval = false
+                }) { Text(if (selectionMode) "Готово" else "Выбрать") }
+                if (selectionMode) {
+                    TextButton(
+                        onClick = { selectedKeys = visibleKeys },
+                        enabled = visibleKeys.isNotEmpty()
+                    ) { Text("Выбрать все найденные") }
+                    TextButton(
+                        onClick = { selectedKeys = emptySet() },
+                        enabled = selectedVisible.isNotEmpty()
+                    ) { Text("Снять выбор") }
+                    TextButton(
+                        onClick = { confirmBulkRemoval = true },
+                        enabled = selectedVisible.isNotEmpty()
+                    ) { Text("Убрать из избранного (${selectedVisible.size})") }
+                }
+            }
+            if (selectionMode) {
+                Text(
+                    "Выбрано: ${selectedVisible.size}. Удаляются только закладки MEDIA HUB.",
+                    style = MaterialTheme.typography.labelSmall
+                )
             }
         }
         OutlinedTextField(
@@ -176,16 +226,36 @@ internal fun CombinedCloudAlbumsOverview(
                                 }?.photo,
                                 refresh = if (isMail) mailRefresh else driveRefresh,
                                 saved = true,
-                                onToggleSaved = { onToggleBookmark(bookmark) },
-                                onOpen = { onOpenAlbum(favorite.source, bookmark.trail) }
+                                onToggleSaved = if (selectionMode) null else ({
+                                    onToggleBookmark(bookmark)
+                                }),
+                                onOpen = {
+                                    if (selectionMode) toggleSelection(favoriteSelectionKey(bookmark))
+                                    else onOpenAlbum(favorite.source, bookmark.trail)
+                                }
                             )
+                            if (selectionMode) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    val key = favoriteSelectionKey(bookmark)
+                                    Checkbox(
+                                        checked = key in selectedVisible,
+                                        onCheckedChange = { toggleSelection(key) }
+                                    )
+                                    Text(
+                                        if (key in selectedVisible) "Выбрано" else "Выбрать",
+                                        style = MaterialTheme.typography.labelMedium
+                                    )
+                                }
+                            }
                             Text(bookmark.trail.dropLast(1).joinToString(" / ") { it.name },
                                 maxLines = 1, overflow = TextOverflow.Ellipsis,
                                 style = MaterialTheme.typography.labelSmall)
-                            TextButton(onClick = {
-                                editing = bookmark
-                                editedName = bookmark.label ?: bookmark.trail.last().name
-                            }) { Text("Название") }
+                            if (!selectionMode) {
+                                TextButton(onClick = {
+                                    editing = bookmark
+                                    editedName = bookmark.label ?: bookmark.trail.last().name
+                                }) { Text("Название") }
+                            }
                         }
                     }
                 }
@@ -255,6 +325,29 @@ internal fun CombinedCloudAlbumsOverview(
                 }
             }
             }
+        }
+        if (confirmBulkRemoval && selectedVisible.isNotEmpty()) {
+            AlertDialog(
+                onDismissRequest = { confirmBulkRemoval = false },
+                title = { Text("Убрать ${selectedVisible.size} из избранного?") },
+                text = {
+                    Text("Будут удалены только отметки избранного в MEDIA HUB. " +
+                        "Файлы и папки в Mail и Google Drive останутся на месте.")
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        onRemoveSelectedBookmarks(selectedVisible)
+                        selectedKeys = emptySet()
+                        selectionMode = false
+                        confirmBulkRemoval = false
+                    }) { Text("Убрать из избранного") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmBulkRemoval = false }) {
+                        Text("Отмена")
+                    }
+                }
+            )
         }
         editing?.let { bookmark ->
             AlertDialog(
