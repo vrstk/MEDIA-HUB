@@ -15,7 +15,6 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
@@ -78,12 +77,17 @@ internal fun CombinedCloudAlbumsOverview(
         mail?.root?.id, drive?.root?.id, search) { mutableStateOf(false) }
     var mailRefresh by remember { mutableIntStateOf(0) }
     var driveRefresh by remember { mutableIntStateOf(0) }
-    val mailContents = mail?.let { rememberFolderContents(it, it.root, mailRefresh, {}) }
-    val driveContents = drive?.let { rememberFolderContents(it, it.root, driveRefresh, onDriveExpired) }
+    // Favorites are local metadata. Do not enumerate cloud roots in this mode.
+    val mailContents = if (shouldListCombinedRoot(favoritesOnly, mail != null)) {
+        mail?.let { rememberFolderContents(it, it.root, mailRefresh, {}) }
+    } else null
+    val driveContents = if (shouldListCombinedRoot(favoritesOnly, drive != null)) {
+        drive?.let { rememberFolderContents(it, it.root, driveRefresh, onDriveExpired) }
+    } else null
     val scope = rememberCoroutineScope()
     val state = rememberLazyGridState()
     LaunchedEffect(search, compact, descending, favoritesOnly) { state.scrollToItem(0) }
-     val all = remember(mailContents?.nodes, driveContents?.nodes, search, descending) {
+    val all = remember(mailContents?.nodes, driveContents?.nodes, search, descending) {
         mergeRootAlbums(
             mailContents?.nodes.orEmpty(), driveContents?.nodes.orEmpty(),
             search, descending = descending
@@ -98,7 +102,6 @@ internal fun CombinedCloudAlbumsOverview(
         visibleFavoriteAlbums(bookmarks, mailScope, mail?.root?.id,
             driveScope, drive?.root?.id, search, descending)
     }
-    val relevantBookmarks = remember(allFavorites) { allFavorites.map { it.bookmark } }
     // Never act on hidden bookmarks or on entries from disconnected accounts.
     val visibleKeys = remember(favorites) {
         favorites.map { favoriteSelectionKey(it.bookmark) }.toSet()
@@ -112,32 +115,15 @@ internal fun CombinedCloudAlbumsOverview(
         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Text("Все облака", style = MaterialTheme.typography.titleMedium)
-        Text("Альбомы из подключённых хранилищ. Файлы не перемещаются и не объединяются физически.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (mail == null) TextButton(onClick = onOpenMail) { Text("Подключить Mail") }
         if (drive == null) TextButton(onClick = onOpenDrive) { Text("Подключить Google Drive") }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(selected = !favoritesOnly,
                 onClick = { favoritesOnly = false }, label = { Text("Все папки") })
             FilterChip(selected = favoritesOnly,
                 onClick = { favoritesOnly = true },
                 label = { Text("Избранное (${allFavorites.size})") })
-        }
-        if (!favoritesOnly && relevantBookmarks.isNotEmpty()) {
-            Text("Быстрый доступ", style = MaterialTheme.typography.labelMedium)
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                allFavorites.forEach { entry ->
-                    FilterChip(selected = false,
-                        onClick = { onOpenAlbum(entry.source, entry.bookmark.trail) },
-                        label = {
-                            Text((if (entry.source == 0) "Mail · " else "Drive · ") +
-                                entry.bookmark.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        })
-                }
-            }
         }
         if (favoritesOnly) {
             Row(
@@ -164,25 +150,27 @@ internal fun CombinedCloudAlbumsOverview(
                     ) { Text("Убрать из избранного (${selectedVisible.size})") }
                 }
             }
-            if (selectionMode) {
-                Text(
-                    "Выбрано: ${selectedVisible.size}. Удаляются только закладки MEDIA HUB.",
-                    style = MaterialTheme.typography.labelSmall
-                )
-            }
         }
         OutlinedTextField(
             value = search, onValueChange = { search = it.take(160) },
             singleLine = true, modifier = Modifier.fillMaxWidth(),
             label = { Text(if (favoritesOnly) "Поиск по избранному" else
-                "Поиск альбомов в обоих облаках") }
+                "Поиск по папкам") },
+            trailingIcon = {
+                if (search.isNotEmpty()) {
+                    TextButton(onClick = { search = "" }) { Text("Очистить") }
+                }
+            }
         )
         val mailCount = mailContents?.nodes?.count { it.isFolder } ?: 0
         val driveCount = driveContents?.nodes?.count { it.isFolder } ?: 0
         Text(
-            if (favoritesOnly) "Сохранено: ${allFavorites.size} · Найдено: ${favorites.size}"
-            else "Mail: $mailCount · Google Drive: $driveCount" +
-                if (mailContents?.nextPage != null || driveContents?.nextPage != null) " · Есть ещё" else "",
+            if (favoritesOnly) {
+                if (selectionMode) "Выбрано: ${selectedVisible.size} из ${favorites.size}"
+                else "Избранное: ${allFavorites.size} · Найдено: ${favorites.size}"
+            } else "Mail: $mailCount · Drive: $driveCount" +
+                if (mailContents?.nextPage != null || driveContents?.nextPage != null)
+                    " · Есть ещё страницы" else "",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
