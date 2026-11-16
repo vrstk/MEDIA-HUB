@@ -162,6 +162,13 @@ internal fun CloudAlbumsPanel(
                     bookmarksStore.save(updated)
                     bookmarks = updated
                 },
+                onRenameBookmark = { bookmark, label ->
+                    val updated = renameAlbumBookmark(
+                        bookmarks, bookmark.scope, bookmark.id, label
+                    )
+                    bookmarksStore.save(updated)
+                    bookmarks = updated
+                },
                 onOpenAlbum = { index, trail ->
                     requestedTrail = index to trail
                     source = index

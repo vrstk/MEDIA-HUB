@@ -8,9 +8,13 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 
 /** Local, opt-in bookmarks. Never stores passwords, access tokens or photo bytes. */
-internal data class AlbumBookmark(val scope: String, val trail: List<CloudNode>) {
+internal data class AlbumBookmark(
+    val scope: String,
+    val trail: List<CloudNode>,
+    val label: String? = null
+) {
     val id: String get() = trail.last().id
-    val title: String get() = trail.last().name
+    val title: String get() = label?.takeIf { it.isNotBlank() } ?: trail.last().name
 }
 
 internal object AlbumBookmarkCodec {
@@ -31,7 +35,9 @@ internal object AlbumBookmarkCodec {
                 parents.put(JSONObject().put("id", node.id).put("name", node.name))
             }
             if (parents.length() != bookmark.trail.size) return@forEach
-            array.put(JSONObject().put("scope", bookmark.scope).put("trail", parents))
+            array.put(JSONObject().put("scope", bookmark.scope).put("trail", parents)
+                .put("label", bookmark.label?.trim()?.takeIf { it.length in 1..80 }
+                    ?: JSONObject.NULL))
         }
         return array.toString()
     }
@@ -62,7 +68,11 @@ internal object AlbumBookmarkCodec {
                     trail.add(CloudNode(id, name, true, null))
                 }
                 if (!valid) continue
-                if (seen.add(scope to trail.last().id)) result.add(AlbumBookmark(scope, trail))
+                val label = record.optString("label", "").trim()
+                    .takeIf { it.length in 1..80 && it != "null" }
+                if (seen.add(scope to trail.last().id)) {
+                    result.add(AlbumBookmark(scope, trail, label))
+                }
             }
             result
         } catch (_: Exception) {
@@ -86,6 +96,18 @@ internal fun toggleAlbumBookmark(
     if (bookmark.trail.size < 2 || bookmark.trail.any { !it.isFolder }) return current
     val rest = current.filterNot { it.scope == bookmark.scope && it.id == bookmark.id }
     return if (rest.size == current.size) (listOf(bookmark) + rest).take(80) else rest
+}
+
+/** Changes only the local label; it never calls provider.rename or edits a remote folder. */
+internal fun renameAlbumBookmark(
+    current: List<AlbumBookmark>, scope: String, folderId: String, label: String?
+): List<AlbumBookmark> {
+    val normalized = label?.trim()?.replace('\n', ' ')?.takeIf { it.isNotBlank() }
+    if (normalized != null && normalized.length > 80) return current
+    return current.map { bookmark ->
+        if (bookmark.scope == scope && bookmark.id == folderId) bookmark.copy(label = normalized)
+        else bookmark
+    }
 }
 
 internal class AlbumBookmarkStore(context: Context) {

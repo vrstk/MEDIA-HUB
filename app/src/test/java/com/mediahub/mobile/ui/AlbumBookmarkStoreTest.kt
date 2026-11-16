@@ -38,6 +38,32 @@ class AlbumBookmarkStoreTest {
         assertFalse(albumBookmarkScope("drive", "a") == albumBookmarkScope("mail", "a"))
     }
 
+    @Test fun customNamesRoundTripAndDoNotAffectRemoteFolderNames() {
+        val updated = renameAlbumBookmark(listOf(album), "mail:test", album.id, "  Любимые  ")
+        assertEquals("Любимые", updated.single().title)
+        assertEquals("Alba", updated.single().trail.last().name)
+        assertEquals(updated, AlbumBookmarkCodec.decode(AlbumBookmarkCodec.encode(updated)))
+        val reset = renameAlbumBookmark(updated, "mail:test", album.id, "")
+        assertEquals("Alba", reset.single().title)
+        assertEquals(null, reset.single().label)
+    }
+
+    @Test fun renameIsScopedAndRejectsOversizedLabels() {
+        val other = album.copy(scope = "mail:other")
+        val saved = renameAlbumBookmark(listOf(album, other), "mail:test",
+            album.id, "New name")
+        assertEquals("New name", saved.first().title)
+        assertEquals("Alba", saved.last().title)
+        assertEquals(saved, renameAlbumBookmark(saved, "mail:test",
+            album.id, "x".repeat(81)))
+    }
+
+    @Test fun oldBookmarksWithoutLabelRemainReadable() {
+        val original = AlbumBookmarkCodec.encode(listOf(album))
+        assertEquals(listOf(album), AlbumBookmarkCodec.decode(original))
+        assertEquals("Alba", AlbumBookmarkCodec.decode(original).single().title)
+    }
+
     @Test fun rejectsFileNodesAndInvalidTrail() {
         val fileNode = CloudNode("/x.jpg", "x.jpg", false, 5)
         assertEquals(listOf(album), toggleAlbumBookmark(listOf(album),

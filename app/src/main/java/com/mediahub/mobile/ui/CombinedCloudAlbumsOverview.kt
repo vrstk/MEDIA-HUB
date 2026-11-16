@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
@@ -55,34 +56,39 @@ internal fun CombinedCloudAlbumsOverview(
     bookmarks: List<AlbumBookmark>,
     chosenCovers: List<AlbumCover>,
     onToggleBookmark: (AlbumBookmark) -> Unit,
+    onRenameBookmark: (AlbumBookmark, String?) -> Unit,
     onOpenAlbum: (Int, List<CloudNode>) -> Unit,
     onOpenMail: () -> Unit,
     onOpenDrive: () -> Unit,
     onDriveExpired: () -> Unit
 ) {
     var search by rememberSaveable { mutableStateOf("") }
+    var favoritesOnly by rememberSaveable { mutableStateOf(false) }
+    var editing by remember { mutableStateOf<AlbumBookmark?>(null) }
+    var editedName by rememberSaveable { mutableStateOf("") }
     var mailRefresh by remember { mutableIntStateOf(0) }
     var driveRefresh by remember { mutableIntStateOf(0) }
     val mailContents = mail?.let { rememberFolderContents(it, it.root, mailRefresh, {}) }
     val driveContents = drive?.let { rememberFolderContents(it, it.root, driveRefresh, onDriveExpired) }
     val scope = rememberCoroutineScope()
     val state = rememberLazyGridState()
-    LaunchedEffect(search, compact, descending) { state.scrollToItem(0) }
+    LaunchedEffect(search, compact, descending, favoritesOnly) { state.scrollToItem(0) }
      val all = remember(mailContents?.nodes, driveContents?.nodes, search, descending) {
         mergeRootAlbums(
             mailContents?.nodes.orEmpty(), driveContents?.nodes.orEmpty(),
             search, descending = descending
         )
     }
-    val relevantBookmarks = remember(bookmarks, mailScope, driveScope, mail?.root?.id, drive?.root?.id) {
-        bookmarks.filter { bookmark ->
-            when (bookmark.scope) {
-                mailScope -> mail != null && bookmark.trail.firstOrNull()?.id == mail.root.id
-                driveScope -> drive != null && bookmark.trail.firstOrNull()?.id == drive.root.id
-                else -> false
-            }
-        }
+    val allFavorites = remember(bookmarks, mailScope, driveScope, mail?.root?.id, drive?.root?.id) {
+        visibleFavoriteAlbums(bookmarks, mailScope, mail?.root?.id,
+            driveScope, drive?.root?.id, "")
     }
+    val favorites = remember(bookmarks, mailScope, driveScope, mail?.root?.id,
+        drive?.root?.id, search, descending) {
+        visibleFavoriteAlbums(bookmarks, mailScope, mail?.root?.id,
+            driveScope, drive?.root?.id, search, descending)
+    }
+    val relevantBookmarks = remember(allFavorites) { allFavorites.map { it.bookmark } }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp),
@@ -94,17 +100,23 @@ internal fun CombinedCloudAlbumsOverview(
             color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (mail == null) TextButton(onClick = onOpenMail) { Text("Подключить Mail") }
         if (drive == null) TextButton(onClick = onOpenDrive) { Text("Подключить Google Drive") }
-        if (relevantBookmarks.isNotEmpty()) {
-            Text("Избранные альбомы", style = MaterialTheme.typography.labelMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = !favoritesOnly,
+                onClick = { favoritesOnly = false }, label = { Text("Все папки") })
+            FilterChip(selected = favoritesOnly,
+                onClick = { favoritesOnly = true },
+                label = { Text("Избранное (${allFavorites.size})") })
+        }
+        if (!favoritesOnly && relevantBookmarks.isNotEmpty()) {
+            Text("Быстрый доступ", style = MaterialTheme.typography.labelMedium)
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                relevantBookmarks.forEach { bookmark ->
-                    val index = if (bookmark.scope == mailScope) 0 else 1
+                allFavorites.forEach { entry ->
                     FilterChip(selected = false,
-                        onClick = { onOpenAlbum(index, bookmark.trail) },
+                        onClick = { onOpenAlbum(entry.source, entry.bookmark.trail) },
                         label = {
-                            Text((if (index == 0) "Mail · " else "Drive · ") + bookmark.title,
-                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text((if (entry.source == 0) "Mail · " else "Drive · ") +
+                                entry.bookmark.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         })
                 }
             }
@@ -112,12 +124,14 @@ internal fun CombinedCloudAlbumsOverview(
         OutlinedTextField(
             value = search, onValueChange = { search = it.take(160) },
             singleLine = true, modifier = Modifier.fillMaxWidth(),
-            label = { Text("Поиск альбомов в обоих облаках") }
+            label = { Text(if (favoritesOnly) "Поиск по избранному" else
+                "Поиск альбомов в обоих облаках") }
         )
         val mailCount = mailContents?.nodes?.count { it.isFolder } ?: 0
         val driveCount = driveContents?.nodes?.count { it.isFolder } ?: 0
         Text(
-            "Mail: $mailCount · Google Drive: $driveCount" +
+            if (favoritesOnly) "Сохранено: ${allFavorites.size} · Найдено: ${favorites.size}"
+            else "Mail: $mailCount · Google Drive: $driveCount" +
                 if (mailContents?.nextPage != null || driveContents?.nextPage != null) " · Есть ещё" else "",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -135,6 +149,47 @@ internal fun CombinedCloudAlbumsOverview(
             verticalArrangement = Arrangement.spacedBy(8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            if (favoritesOnly) {
+                if (favorites.isEmpty()) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        Text(if (allFavorites.isEmpty())
+                            "Избранных альбомов пока нет. Отметьте папку звездой в любом облаке."
+                        else "Совпадений в избранном нет.")
+                    }
+                }
+                items(favorites, key = { "favorite:${it.key}" }) { favorite ->
+                    val isMail = favorite.source == 0
+                    val provider = if (isMail) mail else drive
+                    val session = if (isMail) mailSession else driveSession
+                    val bookmark = favorite.bookmark
+                    if (provider != null && session != null) {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(if (isMail) "Mail" else "Google Drive",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary)
+                            AlbumBrowserTile(
+                                node = bookmark.trail.last().copy(name = bookmark.title),
+                                session = session,
+                                loadCover = loadCovers,
+                                manualCover = chosenCovers.firstOrNull {
+                                    it.scope == bookmark.scope && it.folderId == bookmark.id
+                                }?.photo,
+                                refresh = if (isMail) mailRefresh else driveRefresh,
+                                saved = true,
+                                onToggleSaved = { onToggleBookmark(bookmark) },
+                                onOpen = { onOpenAlbum(favorite.source, bookmark.trail) }
+                            )
+                            Text(bookmark.trail.dropLast(1).joinToString(" / ") { it.name },
+                                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.labelSmall)
+                            TextButton(onClick = {
+                                editing = bookmark
+                                editedName = bookmark.label ?: bookmark.trail.last().name
+                            }) { Text("Название") }
+                        }
+                    }
+                }
+            } else {
             if (all.isEmpty() && mailContents?.loading != true && driveContents?.loading != true) {
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     Text(if (mail == null && drive == null) "Сначала подключите облако."
@@ -199,6 +254,43 @@ internal fun CombinedCloudAlbumsOverview(
                     TextButton(onClick = { driveSession?.invalidateCandidates(); driveRefresh++ }) { Text("Повторить Google Drive") }
                 }
             }
+            }
+        }
+        editing?.let { bookmark ->
+            AlertDialog(
+                onDismissRequest = { editing = null },
+                title = { Text("Название избранного альбома") },
+                text = {
+                    androidx.compose.foundation.layout.Column {
+                        Text("Меняется только подпись в MEDIA HUB, не название папки в облаке.",
+                            style = MaterialTheme.typography.bodySmall)
+                        OutlinedTextField(
+                            value = editedName,
+                            onValueChange = { editedName = it.take(80) },
+                            label = { Text("Название (до 80 символов)") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            onRenameBookmark(bookmark, editedName)
+                            editing = null
+                        }
+                    ) { Text("Сохранить") }
+                },
+                dismissButton = {
+                    Row {
+                        TextButton(onClick = {
+                            onRenameBookmark(bookmark, null)
+                            editing = null
+                        }) { Text("Сбросить") }
+                        TextButton(onClick = { editing = null }) { Text("Отмена") }
+                    }
+                }
+            )
         }
     }
 }
