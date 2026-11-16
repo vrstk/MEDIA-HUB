@@ -273,8 +273,9 @@ internal fun CombinedCloudAlbumsOverview(
                                 it.scope == sourceKey && it.folderId == album.node.id
                             }?.photo,
                             refresh = if (isMail) mailRefresh else driveRefresh,
-                            saved = relevantBookmarks.any {
-                                it.scope == sourceKey && it.id == album.node.id
+                            saved = allFavorites.any {
+                                it.bookmark.scope == sourceKey &&
+                                    it.bookmark.id == album.node.id
                             },
                             onToggleSaved = {
                                 onToggleBookmark(AlbumBookmark(sourceKey, listOf(provider.root, album.node)))
